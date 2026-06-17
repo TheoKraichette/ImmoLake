@@ -21,6 +21,7 @@ RAW_DVF_PREFIX = "raw/dvf"
 SILVER_PREFIX = "silver/dpe"
 SILVER_DVF_PREFIX = "silver/dvf"
 GOLD_PREFIX = "gold/fact_biens"
+GOLD_KPI_PREFIX = "gold/kpi_commune"
 LOGGER = logging.getLogger(__name__)
 
 SILVER_COLUMNS = [
@@ -411,6 +412,57 @@ def _write_gold_partition(s3_hook: S3Hook, fact_df: pd.DataFrame, run_ds: str) -
     return output_key
 
 
+def _build_kpi_commune(fact_df: pd.DataFrame, dim_dpe_df: pd.DataFrame, run_ds: str) -> pd.DataFrame:
+    """Agrege le gold fact_biens en KPIs par commune (prix/m2 median, passoires, decote)."""
+    if fact_df.empty:
+        raise AirflowException("Le gold fact_biens est vide, kpi_commune ne peut pas etre construit")
+
+    df = fact_df.copy()
+    df["prix_m2"] = pd.to_numeric(df["prix_m2"], errors="coerce")
+    df = df.merge(dim_dpe_df, on="etiquette", how="left")
+    df["is_passoire"] = df["label_passoire"].astype("boolean").fillna(False)
+
+    agg = df.groupby("code_insee").agg(
+        prix_m2_median=("prix_m2", "median"),
+        nb_transactions=("code_insee", "size"),
+        pct_passoires=("is_passoire", lambda s: round(100.0 * float(s.mean()), 2)),
+    )
+    pass_m2 = df[df["is_passoire"]].groupby("code_insee")["prix_m2"].mean()
+    nonpass_m2 = df[~df["is_passoire"]].groupby("code_insee")["prix_m2"].mean()
+    agg = agg.join(pass_m2.rename("_pass")).join(nonpass_m2.rename("_nonpass"))
+    base = agg["_nonpass"].replace(0, pd.NA)
+    agg["decote_passoire_pct"] = (100.0 * (agg["_pass"] - agg["_nonpass"]) / base).round(2)
+
+    agg = agg.reset_index()
+    agg["dt"] = pd.to_datetime(run_ds).date()
+    agg["nb_transactions"] = agg["nb_transactions"].astype("int64")
+    return agg[
+        [
+            "dt",
+            "code_insee",
+            "prix_m2_median",
+            "pct_passoires",
+            "decote_passoire_pct",
+            "nb_transactions",
+        ]
+    ]
+
+
+def _write_gold_kpi_partition(s3_hook: S3Hook, kpi_df: pd.DataFrame, run_ds: str) -> str:
+    prefix = f"{GOLD_KPI_PREFIX}/dt={run_ds}/"
+    existing_keys = s3_hook.list_keys(bucket_name=MINIO_BUCKET, prefix=prefix) or []
+    if existing_keys:
+        s3_hook.delete_objects(bucket=MINIO_BUCKET, keys=existing_keys)
+    output_key = f"{prefix}kpi_commune.parquet"
+    s3_hook.load_bytes(
+        bytes_data=_to_parquet_bytes(kpi_df),
+        key=output_key,
+        bucket_name=MINIO_BUCKET,
+        replace=True,
+    )
+    return output_key
+
+
 @dag(
     dag_id="immolake_transform_daily",
     schedule="@daily",
@@ -502,10 +554,31 @@ def immolake_transform_daily():
             len(fact_df),
         )
 
+    @task
+    def build_kpi_commune(ds: str | None = None) -> None:
+        run_ds = _ds(ds)
+        s3_hook = S3Hook(aws_conn_id="minio_default")
+        postgres_hook = PostgresHook(postgres_conn_id="dwh_postgres")
+
+        fact_df = _read_parquet_partition(s3_hook, f"{GOLD_PREFIX}/dt={run_ds}/")
+        if fact_df.empty:
+            raise AirflowException(f"Gold fact_biens introuvable pour dt={run_ds}")
+        dim_dpe = postgres_hook.get_pandas_df("SELECT etiquette, label_passoire FROM dwh.dim_dpe")
+        kpi_df = _build_kpi_commune(fact_df, dim_dpe, run_ds)
+        output_key = _write_gold_kpi_partition(s3_hook, kpi_df, run_ds)
+
+        get_current_context()["ti"].log.info(
+            "Ecriture gold kpi_commune terminee: s3://%s/%s (%s communes)",
+            MINIO_BUCKET,
+            output_key,
+            len(kpi_df),
+        )
+
     dpe_silver = raw_to_silver()
     dvf_silver = raw_dvf_to_silver()
     dvf_to_raw() >> dvf_silver
-    [dpe_silver, dvf_silver, refresh_dimensions()] >> load_fact_biens()
+    fact = load_fact_biens()
+    [dpe_silver, dvf_silver, refresh_dimensions()] >> fact >> build_kpi_commune()
 
 
 immolake_transform_daily()
