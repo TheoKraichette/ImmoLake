@@ -40,6 +40,19 @@ les communes / biens au meilleur rapport prix / rénovation.
                     └────────────────────┘
 ```
 
+```mermaid
+flowchart LR
+  ADEME["API ADEME · DPE"] --> RAW
+  DVF["CSV DVF · data.gouv"] --> RAW
+  subgraph LAKE["MinIO — Data Lake (médaillon)"]
+    RAW["raw/dpe · raw/dvf"] --> SILVER["silver/dpe · silver/dvf"]
+    SILVER --> GOLD["gold/fact_biens · gold/kpi_commune"]
+  end
+  GOLD --> PG[("PostgreSQL serving<br/>dwh + analytics")]
+  PG --> MB["Metabase — dashboards"]
+  AIRFLOW["Airflow — orchestration idempotente (par dt)"] -. pilote .-> LAKE
+```
+
 Détails et choix techniques (ADR « pourquoi PostgreSQL ? », LocalExecutor, Metabase) :
 voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
