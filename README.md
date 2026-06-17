@@ -10,23 +10,7 @@ Contexte : avec la loi Climat & Résilience, les **passoires thermiques (DPE F/G
 progressivement interdites à la location. L'objectif est d'aider un investisseur à cibler
 les communes / biens au meilleur rapport prix / rénovation.
 
-## 📑 Sommaire
-
-- [Architecture](#-architecture)
-- [Stack & accès](#-stack--accès)
-- [Arborescence](#-arborescence)
-- [Démarrage rapide](#-démarrage-rapide)
-- [Commandes (Makefile)](#-commandes-makefile)
-- [Modèle de données](#-modèle-de-données-étoile)
-- [Idempotence](#-idempotence-obligatoire)
-- [Dashboards](#-dashboards-metabase--2)
-- [Automatisation](#-automatisation-bonus-telegram)
-- [Tests](#-tests)
-- [Répartition](#-répartition-3-devs)
-- [Dépannage](#-dépannage)
-- [Sources](#-sources-de-données)
-
-## 🏗️ Architecture
+## Architecture
 
 ```
         ┌────────────┐
@@ -49,9 +33,9 @@ les communes / biens au meilleur rapport prix / rénovation.
 ```
 
 Détails et choix techniques (ADR « pourquoi PostgreSQL ? », LocalExecutor, Metabase) :
-voir **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## 🧰 Stack & accès
+## Stack & accès
 
 | Service | Rôle | Accès |
 |---|---|---|
@@ -63,16 +47,18 @@ voir **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 Conteneurs annexes : `postgres-airflow` (métadonnées Airflow, interne), `minio-init` et
 `airflow-init` (one-shot, s'arrêtent après initialisation).
 
-> Versions calées sur la *Documentation commune* du cours — ajustables dans `.env` / `docker-compose.yml`.
+> PostgreSQL n'est pas une interface web : on l'inspecte via un client SQL (DBeaver, pgAdmin…)
+> sur `localhost:5433`, ou en ligne de commande (voir [Commandes utiles](#commandes-utiles)).
 
-## 📁 Arborescence
+## Arborescence
 
 ```
 immolake/
 ├── docker-compose.yml          # Stack complète (Airflow + MinIO + Postgres + Metabase)
-├── Makefile                    # Raccourcis (make up / down / test / idempotence…)
 ├── .env.example                # Variables (copier en .env)
-├── requirements.txt  .gitignore
+├── requirements.txt
+├── CONTRIBUTING.md             # Règles Git (1 issue = 1 branche)
+├── .gitattributes  .gitignore
 ├── docs/
 │   └── ARCHITECTURE.md         # Schéma détaillé + décisions (ADR)
 ├── init-db/                    # Joué au 1er démarrage de postgres-dwh
@@ -101,7 +87,7 @@ immolake/
     └── test_hook.py            # test unitaire du Hook (mock requests)
 ```
 
-## 🚀 Démarrage rapide
+## Démarrage rapide
 
 ```bash
 # 1. Configuration
@@ -125,24 +111,23 @@ Puis ouvrir **Airflow** (http://localhost:8080), dépauser les DAGs et les décl
 | `minio_default` | AWS/S3 | Data Lake (endpoint `http://minio:9000`) |
 | `ademe_api` | HTTP | API DPE ADEME (`https://data.ademe.fr`) |
 
-## ⌨️ Commandes (Makefile)
+## Commandes utiles
 
 ```bash
-make up            # démarre la stack
-make down          # arrête (conserve les données)
-make reset         # arrête + supprime les volumes (reset total)
-make logs          # suit les logs
-make ps            # état des conteneurs
-make test          # lance pytest dans le conteneur
-make idempotence   # rejoue 2x le DAG transform et compare le COUNT
-make psql          # shell psql sur le DWH
-make airflow       # shell bash dans le scheduler
+docker compose up -d                 # démarre la stack
+docker compose down                  # arrête (conserve les données)
+docker compose down -v               # arrête + supprime les volumes (reset total)
+docker compose ps                    # état des conteneurs
+docker compose logs -f <service>     # logs d'un service
+
+# Shell psql sur le DWH
+docker compose exec postgres-dwh psql -U dwh_user -d immolake
+
+# Lancer les tests
+docker compose exec airflow-scheduler pytest tests/ -v
 ```
 
-> Pas de `make` sous Windows ? Utilisez les commandes `docker compose ...` équivalentes
-> (visibles dans le `Makefile`), ou `choco install make`.
-
-## 🗃️ Modèle de données (étoile)
+## Modèle de données (étoile)
 
 ```
 dim_commune (code_insee PK)   dim_date (dt PK)   dim_dpe (etiquette PK)   dim_type_bien (id PK)
@@ -155,9 +140,11 @@ analytics.kpi_commune_mensuel (dt, code_insee, prix_m2_median,
                                pct_passoires, decote_passoire_pct, nb_transactions)
 ```
 
-Défini dans `init-db/schema.sql` (exécuté automatiquement au 1er démarrage de `postgres-dwh`).
+Tables définies dans `init-db/schema.sql` ; dimensions de référence peuplées par les seeds
+`init-db/zz1_seed_static.sql` (dim_type_bien, dim_date) et `init-db/zz2_seed_dim_commune.sh`
+(dim_commune, depuis le référentiel INSEE).
 
-## ♻️ Idempotence (obligatoire)
+## Idempotence (obligatoire)
 
 Chaque run daté `{{ ds }}` rejoue le même résultat via `DELETE + INSERT` par partition
 (voir `include/sql/transform_fact_biens.sql`) :
@@ -172,10 +159,13 @@ COMMIT;
 **Vérification** (rejouer 2x doit donner le même `COUNT(*)`) :
 
 ```bash
-make idempotence
+docker compose exec airflow-scheduler airflow dags test immolake_transform_daily 2026-06-17
+docker compose exec airflow-scheduler airflow dags test immolake_transform_daily 2026-06-17
+docker compose exec postgres-dwh psql -U dwh_user -d immolake \
+  -c "SELECT COUNT(*) FROM dwh.fact_biens WHERE dt='2026-06-17';"
 ```
 
-## 📊 Dashboards Metabase (≥ 2)
+## Dashboards Metabase (≥ 2)
 
 1. **Marché par commune** — prix/m² médian, volume, carte.
 2. **Impact énergétique** — décote prix/m² F/G vs A/B, % de passoires.
@@ -183,50 +173,47 @@ make idempotence
 
 Connexion Metabase → PostgreSQL : host `postgres-dwh`, port **5432** (interne), db `immolake`.
 
-## 🔔 Automatisation (bonus Telegram)
+## Automatisation (bonus Telegram)
 
 `immolake_analytics_daily` détecte les communes à forte proportion de passoires sous-cotées
 et envoie une **alerte Telegram** (renseigner `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` dans
 `.env`). Condition claire → action justifiée.
 
-## ✅ Tests
+## Tests
 
 ```bash
-make test
-# ou : docker compose exec airflow-scheduler pytest tests/ -v
+docker compose exec airflow-scheduler pytest tests/ -v
 ```
 
 - `test_dags.py` : aucun import en erreur, 3 DAGs présents, `catchup=False`.
 - `test_hook.py` : test unitaire du Custom Hook (mock de `requests`, sans réseau).
 
-## 👥 Répartition (3 devs)
+## Contribution
+
+Workflow obligatoire : **1 issue = 1 branche**, PR vers `main`, relecture, puis merge.
+**Jamais de commit direct sur `main`.** Détails dans [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Répartition (3 devs)
 
 | Dev | Lot | Fichiers |
 |---|---|---|
 | **A** | Ingestion | `plugins/hooks/ademe_api_hook.py`, `dags/immolake_ingest_daily.py` |
-| **B** | Entrepôt | `init-db/schema.sql`, `dags/immolake_transform_daily.py`, `include/sql/*.sql` |
+| **B** | Entrepôt | `init-db/`, `dags/immolake_transform_daily.py`, `include/sql/*.sql` |
 | **C** | Serving | `dags/immolake_analytics_daily.py`, Metabase, Telegram, `tests/`, doc |
 
-## 🛠️ Dépannage
+## Dépannage
 
 | Symptôme | Solution |
 |---|---|
-| `airflow-init` boucle / permissions logs | Sous Linux/Mac, fixer `AIRFLOW_UID=$(id -u)` dans `.env` puis `docker compose up -d` |
+| `airflow-init` boucle / permissions logs | Sous Linux/Mac, fixer `AIRFLOW_UID=$(id -u)` dans `.env` puis relancer |
 | Port déjà utilisé (8080/3000/5433/9000/9001) | Modifier le mapping dans `docker-compose.yml` |
-| Tag d'image introuvable | Ajuster `AIRFLOW_IMAGE_NAME` / `postgres:18` selon la Doc commune |
+| Tag d'image introuvable | Ajuster `AIRFLOW_IMAGE_NAME` / `postgres:18` dans `.env` |
 | Metabase « Cannot connect » au DWH | Host = `postgres-dwh`, port **5432** (interne, pas 5433) |
 | Bucket MinIO absent | `docker compose restart minio-init` ou le créer dans la console (9001) |
-| Dashboards perdus après `down -v` | Normal : `-v` supprime les volumes. Utiliser `down` sans `-v` |
+| Données perdues après `down -v` | Normal : `-v` supprime les volumes. Utiliser `down` sans `-v` |
 
-## 🔗 Sources de données
+## Sources de données
 
 - [API DPE logements (ADEME)](https://data.ademe.fr/datasets/dpe03existant) — `GET /data-fair/api/v1/datasets/dpe03existant/lines`
+- [Référentiel communes INSEE](https://geo.api.gouv.fr/communes) — seed de `dim_commune`
 - [DVF — Demandes de Valeurs Foncières](https://www.data.gouv.fr/datasets/dvf)
-- [DVF géolocalisées](https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees)
-
-## 🛑 Arrêt / reset
-
-```bash
-make down      # arrêt (conserve les données)
-make reset     # arrêt + suppression des volumes (reset total)
-```
