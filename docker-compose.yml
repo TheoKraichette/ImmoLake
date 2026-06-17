@@ -11,7 +11,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
-    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-apache-airflow-providers-amazon requests pytest}
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-apache-airflow-providers-amazon pandas pyarrow requests pytest}
     AIRFLOW_CONN_DWH_POSTGRES: 'postgresql://${DWH_USER:-dwh_user}:${DWH_PASSWORD:-dwh_password}@postgres-dwh:5432/${DWH_DB:-immolake}'
     AIRFLOW_CONN_MINIO_DEFAULT: 'aws://${MINIO_ROOT_USER:-minio_admin}:${MINIO_ROOT_PASSWORD:-minio_password_2026}@/?endpoint_url=http%3A%2F%2Fminio%3A9000&region_name=us-east-1'
     AIRFLOW_CONN_ADEME_API: 'http://data.ademe.fr/?__extra__=%7B%22schema%22%3A%20%22https%22%7D'
