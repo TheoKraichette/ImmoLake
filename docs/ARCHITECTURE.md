@@ -9,8 +9,8 @@ exposé par Metabase.
 ```
  Sources           Ingestion        Data Lake (MinIO)         Data Warehouse (PostgreSQL)     BI
  ┌──────────┐      ┌──────────┐     ┌──────────────────┐      ┌──────────────────────────┐   ┌──────────┐
- │ API ADEME│─────►│AdemeHook │────►│ raw → staging →  │─────►│ staging → dwh → analytics│──►│ Metabase │
- │   DVF    │      │ (Airflow)│     │     curated      │      │   (étoile / Kimball)     │   │          │
+ │ API ADEME│─────►│AdemeHook │────►│ raw → silver →   │─────►│ dwh + analytics (serving)│──►│ Metabase │
+ │   DVF    │      │ (Airflow)│     │  gold (Parquet)  │      │   (étoile / Kimball)     │   │          │
  └──────────┘      └──────────┘     └──────────────────┘      └──────────────────────────┘   └──────────┘
                         ▲                                                  │
                    Orchestration Airflow (idempotence par dt)             ▼
@@ -19,20 +19,28 @@ exposé par Metabase.
 
 ## Flux d'un run quotidien
 
-1. `immolake_ingest_daily` : le Hook appelle l'API ADEME → JSON brut déposé dans
-   `raw/dt=YYYY-MM-DD/` (MinIO) → chargé dans `staging.dpe` (idempotent par `dt`).
-2. `immolake_transform_daily` : `refresh_dim_commune.sql` puis `transform_fact_biens.sql`
-   (DELETE + INSERT par partition) → `dwh.fact_biens`.
-3. `immolake_analytics_daily` : `build_kpi_commune.sql` → `analytics.kpi_commune_mensuel`,
-   puis détection d'anomalies → alerte Telegram (bonus).
+1. **Bronze** : le Hook appelle l'API ADEME → JSON brut déposé dans `raw/dpe/dt=` (MinIO).
+2. **Silver** : nettoyage / typage (pandas/pyarrow) → `silver/dpe/dt=` en Parquet.
+3. **Gold** : modélisation (faits) + agrégats → `gold/fact_biens/dt=` et `gold/kpi_commune/dt=` (Parquet).
+4. **Serving** : chargement idempotent du gold → `dwh.fact_biens` et `analytics.kpi_commune_mensuel`
+   (DELETE + INSERT par `dt`), puis détection d'anomalies → alerte Telegram (bonus).
 
-## Couche de stockage : 3 schémas
+## Couches de stockage
 
-| Schéma | Rôle | Granularité |
-|---|---|---|
-| `staging` | Données brutes typées, 1 ligne = 1 enregistrement source | par run `dt` |
-| `dwh` | Modèle en étoile (dimensions + faits), intégrité FK | historisé |
-| `analytics` | Agrégats pré-calculés pour Metabase | par `dt` / commune |
+**Lac (MinIO, Parquet) — médaillon :**
+
+| Zone | Rôle |
+|---|---|
+| `raw` | JSON brut de l'API, rejouable (bronze) |
+| `silver` | données nettoyées / typées / dédupliquées (Parquet) |
+| `gold` | faits + KPIs modélisés (Parquet) |
+
+**Serving (PostgreSQL) :**
+
+| Schéma | Rôle |
+|---|---|
+| `dwh` | modèle en étoile (dimensions + faits), intégrité FK |
+| `analytics` | agrégats pré-calculés pour Metabase |
 
 ---
 
@@ -45,7 +53,7 @@ colonnaire (BigQuery, Snowflake, ClickHouse), et c'est volontaire :
 
 - **Volume adapté** : quelques millions de lignes filtrées par commune → Postgres + index
   répond en millisecondes. Un DWH colonnaire serait du sur-engineering.
-- **Conforme au sujet** : les TP imposent PostgreSQL avec `staging`/`dwh`/`analytics`.
+- **Conforme au sujet** : les TP imposent PostgreSQL pour le modèle `dwh`/`analytics`.
 - **Kimball en relationnel** : PK/FK et jointures dim↔fait sont le terrain naturel de Postgres
   (un moteur colonnaire gère mal les FK).
 - **Idempotence transactionnelle** : le pattern `BEGIN; DELETE; INSERT; COMMIT;` repose sur
@@ -55,8 +63,8 @@ colonnaire (BigQuery, Snowflake, ClickHouse), et c'est volontaire :
 > Le rôle « lakehouse » est porté par **MinIO + Postgres ensemble** : MinIO garde le brut
 > rejouable, Postgres porte le modèle propre.
 
-**Évolution possible (si gros volumes)** : passer les fichiers MinIO en **Parquet** et
-interroger via **DuckDB**, ou migrer le DWH vers **ClickHouse**. À mentionner en soutenance.
+**Évolution possible (si gros volumes)** : interroger directement le gold Parquet via
+**DuckDB** (écarté ici pour rester simple), ou migrer le serving vers **ClickHouse**.
 
 ---
 
@@ -72,3 +80,14 @@ un pipeline `@daily` à faible parallélisme. Le passage à Celery reste trivial
 Metabase : installation Docker triviale, auto-détection des relations du modèle en étoile,
 suffisant pour 2–4 dashboards. Superset est plus puissant mais plus complexe à configurer
 — hors budget pour un week-end.
+
+## ADR-004 — Médaillon matérialisé dans MinIO (Parquet), sans DuckDB
+
+Les couches **silver** et **gold** sont des fichiers **Parquet** dans MinIO (pas seulement des
+schémas Postgres). Les transformations raw→silver→gold se font en **Python (pandas/pyarrow)**
+dans Airflow. PostgreSQL ne porte que le **serving** (dwh + analytics), chargé depuis le gold,
+pour que Metabase interroge du SQL.
+
+DuckDB n'est **pas** utilisé : pour le volume du projet, charger le gold dans Postgres suffit
+et évite une techno de plus. Conséquences : pas de schéma `staging` dans Postgres (le silver
+vit dans le lac) et les transformations ne sont plus écrites en SQL.

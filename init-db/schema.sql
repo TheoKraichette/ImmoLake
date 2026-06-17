@@ -1,36 +1,9 @@
 -- Schéma du DWH ImmoLake (exécuté au 1er démarrage de postgres-dwh).
--- staging = brut typé, dwh = étoile (Kimball), analytics = agrégats.
+-- Postgres = couche de service, chargée depuis le gold (Parquet, MinIO).
+-- dwh = étoile (Kimball), analytics = agrégats. Le silver vit en Parquet dans MinIO.
 
-CREATE SCHEMA IF NOT EXISTS staging;
 CREATE SCHEMA IF NOT EXISTS dwh;
 CREATE SCHEMA IF NOT EXISTS analytics;
-
--- staging
-CREATE TABLE IF NOT EXISTS staging.dpe (
-    numero_dpe         TEXT,
-    dt                 DATE,            -- partition de run ({{ ds }})
-    code_insee         TEXT,
-    code_postal        TEXT,
-    type_batiment      TEXT,
-    surface_habitable  NUMERIC,
-    etiquette_dpe      TEXT,
-    conso_energie      NUMERIC,
-    date_etablissement DATE,
-    payload            JSONB,
-    ingested_at        TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS staging.transactions (
-    id_mutation     TEXT,
-    dt              DATE,
-    code_insee      TEXT,
-    type_local      TEXT,
-    surface_reelle  NUMERIC,
-    valeur_fonciere NUMERIC,
-    date_mutation   DATE,
-    payload         JSONB,
-    ingested_at     TIMESTAMPTZ DEFAULT now()
-);
 
 -- dwh (étoile)
 CREATE TABLE IF NOT EXISTS dwh.dim_commune (
