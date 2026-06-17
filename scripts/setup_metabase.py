@@ -28,6 +28,10 @@ DWH = {
 
 s = requests.Session()
 
+KPI = "analytics.kpi_commune_mensuel"
+FACT = "dwh.fact_biens"
+DIM = "dwh.dim_commune"
+
 
 def wait_for_metabase():
     for _ in range(60):
@@ -43,7 +47,7 @@ def wait_for_metabase():
 def authenticate():
     props = s.get(f"{MB}/api/session/properties").json()
     token = props.get("setup-token")
-    if token:
+    if token and not props.get("has-user-setup"):
         r = s.post(f"{MB}/api/setup", json={
             "token": token,
             "user": {"first_name": "Admin", "last_name": "Immo",
@@ -66,7 +70,6 @@ def ensure_database():
     dbs = data.get("data", data) if isinstance(data, dict) else data
     for db in dbs:
         if db.get("name") == DB_NAME:
-            print(f"Base '{DB_NAME}' déjà connectée (id={db['id']}).")
             return db["id"]
     r = s.post(f"{MB}/api/database", json={
         "name": DB_NAME, "engine": "postgres",
@@ -75,40 +78,51 @@ def ensure_database():
     r.raise_for_status()
     db_id = r.json()["id"]
     s.post(f"{MB}/api/database/{db_id}/sync_schema")
-    print(f"Base '{DB_NAME}' connectée (id={db_id}).")
     return db_id
 
 
-def ensure_card(db_id, name, sql, display):
-    existing = {c["name"]: c["id"] for c in s.get(f"{MB}/api/card").json()}
-    if name in existing:
-        return existing[name]
-    r = s.post(f"{MB}/api/card", json={
+def _bar_viz(dimension, metric, x_title, y_title):
+    return {
+        "graph.dimensions": [dimension],
+        "graph.metrics": [metric],
+        "graph.x_axis.title_text": x_title,
+        "graph.y_axis.title_text": y_title,
+        "graph.show_values": True,
+    }
+
+
+def ensure_card(db_id, name, sql, display, viz=None):
+    """Crée ou met à jour (par nom) une question native."""
+    existing = {c["name"]: c for c in s.get(f"{MB}/api/card").json()}
+    payload = {
         "name": name,
         "dataset_query": {"type": "native", "native": {"query": sql}, "database": db_id},
         "display": display,
-        "visualization_settings": {},
-    })
+        "visualization_settings": viz or {},
+    }
+    if name in existing:
+        cid = existing[name]["id"]
+        s.put(f"{MB}/api/card/{cid}", json=payload).raise_for_status()
+        return cid
+    r = s.post(f"{MB}/api/card", json=payload)
     r.raise_for_status()
     return r.json()["id"]
 
 
-def ensure_dashboard(name, card_ids):
+def ensure_dashboard(name, layout):
+    """layout = liste de (card_id, row, col, size_x, size_y)."""
     existing = {d["name"]: d["id"] for d in s.get(f"{MB}/api/dashboard").json()}
     dash_id = existing.get(name)
     if dash_id is None:
         r = s.post(f"{MB}/api/dashboard", json={"name": name})
         r.raise_for_status()
         dash_id = r.json()["id"]
-    dashcards = []
-    for i, cid in enumerate(card_ids):
-        dashcards.append({
-            "id": -(i + 1), "card_id": cid,
-            "row": (i // 2) * 6, "col": (i % 2) * 12,
-            "size_x": 12, "size_y": 6,
-        })
-    s.put(f"{MB}/api/dashboard/{dash_id}", json={"dashcards": dashcards})
-    print(f"Dashboard '{name}' prêt (id={dash_id}, {len(card_ids)} cartes).")
+    dashcards = [
+        {"id": -(i + 1), "card_id": cid, "row": row, "col": col, "size_x": sx, "size_y": sy}
+        for i, (cid, row, col, sx, sy) in enumerate(layout)
+    ]
+    s.put(f"{MB}/api/dashboard/{dash_id}", json={"dashcards": dashcards}).raise_for_status()
+    print(f"Dashboard '{name}' prêt (id={dash_id}, {len(layout)} cartes).")
     return dash_id
 
 
@@ -117,28 +131,50 @@ def main():
     authenticate()
     db_id = ensure_database()
 
-    KPI = "analytics.kpi_commune_mensuel"
-    FACT = "dwh.fact_biens"
+    # --- Cartes : Marché ---
+    nb_biens = ensure_card(db_id, "Biens analysés (total)",
+                           f"SELECT count(*) AS biens FROM {FACT}", "scalar")
+    prix_global = ensure_card(db_id, "Prix/m² médian (global)",
+                              f"SELECT round(percentile_cont(0.5) WITHIN GROUP (ORDER BY prix_m2)) AS prix_m2 "
+                              f"FROM {FACT} WHERE prix_m2 IS NOT NULL", "scalar")
+    prix_commune = ensure_card(db_id, "Prix/m² médian par commune",
+                               f"SELECT c.nom AS commune, round(k.prix_m2_median) AS prix_m2 "
+                               f"FROM {KPI} k JOIN {DIM} c USING (code_insee) ORDER BY k.prix_m2_median DESC",
+                               "bar", _bar_viz("commune", "prix_m2", "Commune", "Prix/m² (€)"))
+    volume_commune = ensure_card(db_id, "Nombre de biens par commune",
+                                 f"SELECT c.nom AS commune, k.nb_transactions AS nb_biens "
+                                 f"FROM {KPI} k JOIN {DIM} c USING (code_insee) ORDER BY k.nb_transactions DESC",
+                                 "bar", _bar_viz("commune", "nb_biens", "Commune", "Nb de biens"))
+    detail = ensure_card(db_id, "Détail par commune",
+                         f"SELECT c.nom AS commune, c.departement AS dep, round(k.prix_m2_median) AS prix_m2, "
+                         f"k.nb_transactions AS nb_biens, round(k.pct_passoires, 1) AS pct_passoires "
+                         f"FROM {KPI} k JOIN {DIM} c USING (code_insee) ORDER BY c.nom", "table")
 
-    marche = [
-        ensure_card(db_id, "Prix/m² médian par commune",
-                    f"SELECT code_insee, prix_m2_median FROM {KPI} ORDER BY prix_m2_median DESC", "bar"),
-        ensure_card(db_id, "Volume de biens par commune",
-                    f"SELECT code_insee, nb_transactions FROM {KPI} ORDER BY nb_transactions DESC", "bar"),
-        ensure_card(db_id, "Détail marché par commune",
-                    f"SELECT code_insee, prix_m2_median, nb_transactions FROM {KPI} ORDER BY code_insee", "table"),
-    ]
-    energie = [
-        ensure_card(db_id, "% de passoires (F/G) par commune",
-                    f"SELECT code_insee, pct_passoires FROM {KPI} ORDER BY pct_passoires DESC", "bar"),
-        ensure_card(db_id, "Décote des passoires (%) par commune",
-                    f"SELECT code_insee, decote_passoire_pct FROM {KPI} ORDER BY decote_passoire_pct", "bar"),
-        ensure_card(db_id, "Répartition des étiquettes DPE",
-                    f"SELECT etiquette, count(*) AS nb FROM {FACT} GROUP BY etiquette ORDER BY etiquette", "bar"),
-    ]
+    # --- Cartes : Énergie ---
+    part_passoires = ensure_card(db_id, "Part de passoires (global, %)",
+                                 f"SELECT round(100.0 * avg(CASE WHEN etiquette IN ('F','G') THEN 1 ELSE 0 END), 1) AS pct "
+                                 f"FROM {FACT}", "scalar")
+    passoires_commune = ensure_card(db_id, "% de passoires (F/G) par commune",
+                                    f"SELECT c.nom AS commune, round(k.pct_passoires, 1) AS pct_passoires "
+                                    f"FROM {KPI} k JOIN {DIM} c USING (code_insee) ORDER BY k.pct_passoires DESC",
+                                    "bar", _bar_viz("commune", "pct_passoires", "Commune", "% passoires"))
+    dpe_repartition = ensure_card(db_id, "Répartition des étiquettes DPE",
+                                  f"SELECT etiquette, count(*) AS nb FROM {FACT} GROUP BY etiquette ORDER BY etiquette",
+                                  "bar", _bar_viz("etiquette", "nb", "Étiquette DPE", "Nb de biens"))
 
-    ensure_dashboard("Marché par commune", marche)
-    ensure_dashboard("Impact énergétique (DPE)", energie)
+    # --- Dashboards (grille 24 colonnes) ---
+    ensure_dashboard("Marché par commune", [
+        (nb_biens, 0, 0, 6, 3),
+        (prix_global, 0, 6, 6, 3),
+        (prix_commune, 3, 0, 12, 7),
+        (volume_commune, 3, 12, 12, 7),
+        (detail, 10, 0, 24, 6),
+    ])
+    ensure_dashboard("Impact énergétique (DPE)", [
+        (part_passoires, 0, 0, 6, 3),
+        (passoires_commune, 0, 6, 18, 7),
+        (dpe_repartition, 7, 0, 12, 7),
+    ])
     print("OK — dashboards disponibles sur " + MB)
 
 
