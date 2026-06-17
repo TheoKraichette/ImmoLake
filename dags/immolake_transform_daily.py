@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from io import BytesIO
 from typing import Any
 
 import pandas as pd
 import pendulum
+import requests
 from airflow.exceptions import AirflowException
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -15,8 +17,11 @@ from airflow.sdk import dag, get_current_context, task
 
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "immolake")
 RAW_PREFIX = "raw/dpe"
+RAW_DVF_PREFIX = "raw/dvf"
 SILVER_PREFIX = "silver/dpe"
+SILVER_DVF_PREFIX = "silver/dvf"
 GOLD_PREFIX = "gold/fact_biens"
+LOGGER = logging.getLogger(__name__)
 
 SILVER_COLUMNS = [
     "numero_dpe",
@@ -43,6 +48,17 @@ CANONICAL_COLUMNS = {
         "consommation_energie_finale",
     ),
 }
+
+DVF_COLUMNS = {
+    "code_insee": ("code_insee", "code_commune", "code_insee_commune"),
+    "type_bien": ("type_bien", "type_local", "type_batiment"),
+    "surface": ("surface", "surface_reelle_bati", "surface_habitable"),
+    "prix": ("prix", "valeur_fonciere", "valeur_fonciere_euros"),
+    "prix_m2": ("prix_m2", "prix_m2_median"),
+    "date_mutation": ("date_mutation", "date", "date_transaction"),
+}
+
+SILVER_DVF_COLUMNS = ["code_insee", "type_bien", "surface", "prix", "prix_m2", "date_mutation"]
 
 
 def _ds(ds: str | None) -> str:
@@ -121,15 +137,14 @@ def _to_parquet_bytes(df: pd.DataFrame) -> bytes:
     return buffer.getvalue()
 
 
-def _read_silver_partition(s3_hook: S3Hook, run_ds: str) -> pd.DataFrame:
-    prefix = f"{SILVER_PREFIX}/dt={run_ds}/"
+def _read_parquet_partition(s3_hook: S3Hook, prefix: str) -> pd.DataFrame:
     keys = [
         key
         for key in s3_hook.list_keys(bucket_name=MINIO_BUCKET, prefix=prefix) or []
         if key.endswith(".parquet")
     ]
     if not keys:
-        raise AirflowException(f"Aucun fichier Parquet trouve dans s3://{MINIO_BUCKET}/{prefix}")
+        return pd.DataFrame()
 
     s3_client = s3_hook.get_conn()
     frames = []
@@ -137,6 +152,18 @@ def _read_silver_partition(s3_hook: S3Hook, run_ds: str) -> pd.DataFrame:
         obj = s3_client.get_object(Bucket=MINIO_BUCKET, Key=key)
         frames.append(pd.read_parquet(BytesIO(obj["Body"].read())))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _read_silver_partition(s3_hook: S3Hook, run_ds: str) -> pd.DataFrame:
+    prefix = f"{SILVER_PREFIX}/dt={run_ds}/"
+    df = _read_parquet_partition(s3_hook, prefix)
+    if df.empty:
+        raise AirflowException(f"Aucun fichier Parquet trouve dans s3://{MINIO_BUCKET}/{prefix}")
+    return df
+
+
+def _read_dvf_partition(s3_hook: S3Hook, run_ds: str) -> pd.DataFrame:
+    return _read_parquet_partition(s3_hook, f"{SILVER_DVF_PREFIX}/dt={run_ds}/")
 
 
 def _first_existing_column(df: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
@@ -160,6 +187,27 @@ def _select_column(df: pd.DataFrame, output_name: str) -> pd.Series:
     return df[source_name]
 
 
+def _select_optional_column(
+    df: pd.DataFrame,
+    candidates: tuple[str, ...],
+    dtype: str = "object",
+) -> pd.Series:
+    source_name = _first_existing_column(df, candidates)
+    if source_name is None:
+        return pd.Series(pd.NA, index=df.index, dtype=dtype)
+    return df[source_name]
+
+
+def _to_numeric_series(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(
+        series.astype("string")
+        .str.replace("\u00a0", "", regex=False)
+        .str.replace(" ", "", regex=False)
+        .str.replace(",", ".", regex=False),
+        errors="coerce",
+    )
+
+
 def _normalize_type_bien(value: object) -> str:
     text = str(value or "").strip().lower()
     if "appart" in text:
@@ -167,6 +215,46 @@ def _normalize_type_bien(value: object) -> str:
     if "maison" in text:
         return "maison"
     return "autre"
+
+
+def _clean_dvf_frame(dvf_df: pd.DataFrame) -> pd.DataFrame:
+    if dvf_df.empty:
+        return pd.DataFrame(columns=SILVER_DVF_COLUMNS)
+
+    cleaned = pd.DataFrame(
+        {
+            "code_insee": _select_optional_column(dvf_df, DVF_COLUMNS["code_insee"], dtype="string")
+            .astype("string")
+            .str.replace(r"\.0$", "", regex=True)
+            .str.zfill(5)
+            .str.strip(),
+            "type_bien": _select_optional_column(dvf_df, DVF_COLUMNS["type_bien"]).map(_normalize_type_bien),
+            "surface": _to_numeric_series(_select_optional_column(dvf_df, DVF_COLUMNS["surface"])),
+            "prix": _to_numeric_series(_select_optional_column(dvf_df, DVF_COLUMNS["prix"])),
+            "prix_m2": _to_numeric_series(_select_optional_column(dvf_df, DVF_COLUMNS["prix_m2"])),
+            "date_mutation": pd.to_datetime(
+                _select_optional_column(dvf_df, DVF_COLUMNS["date_mutation"]),
+                errors="coerce",
+                dayfirst=True,
+            ).dt.date,
+        }
+    )
+    missing_prix_m2 = cleaned["prix_m2"].isna()
+    cleaned.loc[missing_prix_m2, "prix_m2"] = cleaned.loc[missing_prix_m2, "prix"] / cleaned.loc[
+        missing_prix_m2,
+        "surface",
+    ]
+    cleaned = cleaned[
+        cleaned["code_insee"].notna()
+        & (cleaned["code_insee"] != "")
+        & cleaned["surface"].notna()
+        & (cleaned["surface"] > 0)
+        & cleaned["prix"].notna()
+        & (cleaned["prix"] > 0)
+        & cleaned["prix_m2"].notna()
+        & (cleaned["prix_m2"] > 0)
+    ]
+    return cleaned[SILVER_DVF_COLUMNS].reset_index(drop=True)
 
 
 def _prepare_fact_frame(silver_df: pd.DataFrame, run_ds: str) -> pd.DataFrame:
@@ -204,10 +292,63 @@ def _prepare_fact_frame(silver_df: pd.DataFrame, run_ds: str) -> pd.DataFrame:
             ignore_index=True,
         )
 
-    # DVF (#7) remplira les prix; #6 produit d'abord le fait DPE rattache aux dimensions.
     fact_df["prix"] = pd.Series([pd.NA] * len(fact_df), dtype="Float64")
     fact_df["prix_m2"] = pd.Series([pd.NA] * len(fact_df), dtype="Float64")
     return fact_df
+
+
+def _prepare_dvf_price_reference(dvf_df: pd.DataFrame) -> pd.DataFrame:
+    if dvf_df.empty:
+        return pd.DataFrame(columns=["code_insee", "type_bien", "dvf_prix_m2", "dvf_nb_transactions"])
+
+    price_df = pd.DataFrame(
+        {
+            "code_insee": _select_optional_column(dvf_df, DVF_COLUMNS["code_insee"], dtype="string")
+            .astype("string")
+            .str.strip(),
+            "type_bien": _select_optional_column(dvf_df, DVF_COLUMNS["type_bien"]).map(_normalize_type_bien),
+            "surface": _to_numeric_series(_select_optional_column(dvf_df, DVF_COLUMNS["surface"])),
+            "prix": _to_numeric_series(_select_optional_column(dvf_df, DVF_COLUMNS["prix"])),
+            "prix_m2": _to_numeric_series(_select_optional_column(dvf_df, DVF_COLUMNS["prix_m2"])),
+        }
+    )
+    missing_prix_m2 = price_df["prix_m2"].isna()
+    price_df.loc[missing_prix_m2, "prix_m2"] = price_df.loc[missing_prix_m2, "prix"] / price_df.loc[
+        missing_prix_m2,
+        "surface",
+    ]
+    price_df = price_df[
+        price_df["code_insee"].notna()
+        & (price_df["code_insee"] != "")
+        & price_df["prix_m2"].notna()
+        & (price_df["prix_m2"] > 0)
+    ].copy()
+
+    if price_df.empty:
+        return pd.DataFrame(columns=["code_insee", "type_bien", "dvf_prix_m2", "dvf_nb_transactions"])
+
+    return (
+        price_df.groupby(["code_insee", "type_bien"], as_index=False)
+        .agg(dvf_prix_m2=("prix_m2", "median"), dvf_nb_transactions=("prix_m2", "size"))
+    )
+
+
+def _enrich_prices_from_dvf(fact_df: pd.DataFrame, dvf_prices: pd.DataFrame) -> pd.DataFrame:
+    if dvf_prices.empty:
+        LOGGER.warning("Aucune donnee DVF exploitable: prix et prix_m2 restent NULL")
+        return fact_df
+
+    enriched = fact_df.merge(dvf_prices, on=["code_insee", "type_bien"], how="left")
+    matched_mask = enriched["dvf_prix_m2"].notna()
+    enriched.loc[matched_mask, "prix_m2"] = enriched.loc[matched_mask, "dvf_prix_m2"]
+    enriched.loc[matched_mask, "prix"] = enriched.loc[matched_mask, "surface"] * enriched.loc[matched_mask, "prix_m2"]
+    LOGGER.info(
+        "Enrichissement DVF: %s/%s lignes enrichies, %s sans prix",
+        int(matched_mask.sum()),
+        len(enriched),
+        int((~matched_mask).sum()),
+    )
+    return enriched.drop(columns=["dvf_prix_m2", "dvf_nb_transactions"])
 
 
 def _attach_dimensions(fact_df: pd.DataFrame, postgres_hook: PostgresHook) -> pd.DataFrame:
@@ -296,6 +437,47 @@ def immolake_transform_daily():
         return silver_key
 
     @task
+    def dvf_to_raw(ds: str | None = None) -> str:
+        run_ds = _ds(ds)
+        raw_key = f"{RAW_DVF_PREFIX}/dt={run_ds}/data.csv"
+        dvf_csv_url = os.getenv("DVF_CSV_URL")
+        if not dvf_csv_url:
+            raise AirflowException("DVF_CSV_URL doit etre renseigne pour produire raw/dvf")
+
+        response = requests.get(dvf_csv_url, timeout=120)
+        response.raise_for_status()
+
+        s3 = S3Hook(aws_conn_id="minio_default")
+        s3.load_bytes(
+            bytes_data=response.content,
+            key=raw_key,
+            bucket_name=MINIO_BUCKET,
+            replace=True,
+        )
+        return raw_key
+
+    @task
+    def raw_dvf_to_silver(ds: str | None = None) -> str:
+        run_ds = _ds(ds)
+        raw_key = f"{RAW_DVF_PREFIX}/dt={run_ds}/data.csv"
+        silver_key = f"{SILVER_DVF_PREFIX}/dt={run_ds}/data.parquet"
+        max_rows = int(os.getenv("DVF_MAX_ROWS", "0") or "0") or None
+
+        s3 = S3Hook(aws_conn_id="minio_default")
+        raw_obj = s3.get_conn().get_object(Bucket=MINIO_BUCKET, Key=raw_key)
+        raw_bytes = raw_obj["Body"].read()
+        raw_df = pd.read_csv(BytesIO(raw_bytes), sep=None, engine="python", nrows=max_rows)
+        silver_df = _clean_dvf_frame(raw_df)
+        s3.load_bytes(
+            bytes_data=_to_parquet_bytes(silver_df),
+            key=silver_key,
+            bucket_name=MINIO_BUCKET,
+            replace=True,
+        )
+        LOGGER.info("Ecriture silver DVF terminee: s3://%s/%s (%s lignes)", MINIO_BUCKET, silver_key, len(silver_df))
+        return silver_key
+
+    @task
     def refresh_dimensions() -> None:
         """Dimensions are seeded at postgres-dwh init time for the MVP."""
         PostgresHook(postgres_conn_id="dwh_postgres").get_first("SELECT 1 FROM dwh.dim_commune LIMIT 1")
@@ -307,7 +489,9 @@ def immolake_transform_daily():
         postgres_hook = PostgresHook(postgres_conn_id="dwh_postgres")
 
         silver_df = _read_silver_partition(s3_hook, run_ds)
+        dvf_df = _read_dvf_partition(s3_hook, run_ds)
         fact_df = _prepare_fact_frame(silver_df, run_ds)
+        fact_df = _enrich_prices_from_dvf(fact_df, _prepare_dvf_price_reference(dvf_df))
         fact_df = _attach_dimensions(fact_df, postgres_hook)
         output_key = _write_gold_partition(s3_hook, fact_df, run_ds)
 
@@ -318,7 +502,10 @@ def immolake_transform_daily():
             len(fact_df),
         )
 
-    raw_to_silver() >> refresh_dimensions() >> load_fact_biens()
+    dpe_silver = raw_to_silver()
+    dvf_silver = raw_dvf_to_silver()
+    dvf_to_raw() >> dvf_silver
+    [dpe_silver, dvf_silver, refresh_dimensions()] >> load_fact_biens()
 
 
 immolake_transform_daily()
