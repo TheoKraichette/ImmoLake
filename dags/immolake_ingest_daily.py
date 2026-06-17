@@ -1,4 +1,4 @@
-"""Ingestion quotidienne : API ADEME -> MinIO raw -> staging.dpe."""
+"""Ingestion quotidienne : API ADEME -> MinIO raw."""
 from __future__ import annotations
 
 import json
@@ -58,12 +58,7 @@ def immolake_ingest_daily():
         )
         return raw_key
 
-    @task
-    def load_to_staging(raw_key: str, ds: str | None = None) -> None:
-        # TODO: charger raw -> staging.dpe (idempotent par dt)
-        raise NotImplementedError
-
-    load_to_staging(extract_to_raw())
+    extract_to_raw()
 
 
 immolake_ingest_daily()
