@@ -164,10 +164,21 @@ docker compose exec postgres-dwh psql -U dwh_user -d immolake \
 
 ## Dashboards Metabase (≥ 2)
 
-1. **Marché par commune** — prix/m² médian, volume, carte.
-2. **Impact énergétique** — décote prix/m² F/G vs A/B, % de passoires.
-3. *(bonus)* **Détecteur d'opportunités** — biens sous la médiane communale (anomalies).
+Provisionnés **par code** (idempotent) via `scripts/setup_metabase.py` — connexion DWH +
+questions SQL + 2 dashboards, sans clics manuels (rejouable après un `down -v`).
 
+1. **Marché par commune** — prix/m² médian, volume de biens, détail par commune.
+2. **Impact énergétique (DPE)** — % de passoires (F/G), décote des passoires, répartition des étiquettes.
+
+**Prérequis :** le DWH doit être peuplé (pipeline `ingest → transform → analytics` lancé pour ≥ 1 commune).
+
+```bash
+docker run --rm --network immolake_default -v "$PWD/scripts:/s" \
+  -e MB_URL=http://metabase:3000 python:3.12-slim \
+  sh -c "pip install -q requests && python /s/setup_metabase.py"
+```
+
+Dashboards ensuite sur http://localhost:3000 (`admin@immolake.local` / `MB_ADMIN_PASSWORD`).
 Connexion Metabase → PostgreSQL : host `postgres-dwh`, port **5432** (interne), db `immolake`.
 
 ## Automatisation (bonus Telegram)
