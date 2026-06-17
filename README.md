@@ -165,21 +165,28 @@ docker compose exec postgres-dwh psql -U dwh_user -d immolake \
 ## Dashboards Metabase (≥ 2)
 
 Provisionnés **par code** (idempotent) via `scripts/setup_metabase.py` — connexion DWH +
-questions SQL + 2 dashboards, sans clics manuels (rejouable après un `down -v`).
+questions SQL + 2 dashboards (avec encarts explicatifs), sans clics manuels.
 
-1. **Marché par commune** — prix/m² médian, volume de biens, détail par commune.
-2. **Impact énergétique (DPE)** — % de passoires (F/G), décote des passoires, répartition des étiquettes.
+1. **Marché par commune** — prix/m² médian, nombre de logements, détail par commune.
+2. **Impact énergétique (DPE)** — % de passoires (F/G), répartition des étiquettes A→G.
 
-**Prérequis :** le DWH doit être peuplé (pipeline `ingest → transform → analytics` lancé pour ≥ 1 commune).
+Provisioning (une fois la stack démarrée) :
 
 ```bash
-docker run --rm --network immolake_default -v "$PWD/scripts:/s" \
-  -e MB_URL=http://metabase:3000 python:3.12-slim \
-  sh -c "pip install -q requests && python /s/setup_metabase.py"
+docker compose exec -T airflow-scheduler python - < scripts/setup_metabase.py
 ```
 
-Dashboards ensuite sur http://localhost:3000 (`admin@immolake.local` / `MB_ADMIN_PASSWORD`).
+Dashboards sur http://localhost:3000 (`admin@immolake.local` / `MB_ADMIN_PASSWORD`).
 Connexion Metabase → PostgreSQL : host `postgres-dwh`, port **5432** (interne), db `immolake`.
+
+## Données de démonstration (snapshot)
+
+Le serving (`dwh.fact_biens` + `analytics.kpi_commune_mensuel`) est **pré-rempli dès le 1er
+`docker compose up`** via un snapshot committé (`init-db/snapshot/*.csv.gz`, restauré par
+`init-db/zz9_restore_snapshot.sh`) → **tout le monde a des dashboards peuplés sans relancer le pipeline.**
+Couverture : 21 zones (19 grandes villes + Paris 1er/2e), ~200 k logements (échantillon).
+
+Régénérer le snapshot depuis des données fraîches : lancer le pipeline puis `bash scripts/make_snapshot.sh`.
 
 ## Automatisation (bonus Telegram)
 
