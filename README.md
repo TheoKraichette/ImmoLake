@@ -64,8 +64,9 @@ immolake/
 ├── init-db/                    # Joué au 1er démarrage de postgres-dwh
 │   ├── schema.sql              # Schémas dwh/analytics + dim_dpe
 │   ├── zz1_seed_static.sql     # Seed dim_type_bien + dim_date
-│   ├── zz2_seed_dim_commune.sh # Seed dim_commune depuis communes.json
-│   └── communes.json           # Référentiel INSEE des communes (snapshot)
+│   ├── zz2_seed_dim_commune.sh # Seed dim_commune (communes + arrondissements)
+│   ├── communes.json           # Référentiel INSEE des communes (snapshot)
+│   └── arrondissements.json    # Arrondissements municipaux 75/69/13 (snapshot)
 ├── dags/
 │   ├── immolake_ingest_daily.py      # API → MinIO raw (bronze)
 │   ├── immolake_transform_daily.py   # raw → silver → gold (Parquet)
