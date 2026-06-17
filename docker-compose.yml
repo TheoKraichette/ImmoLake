@@ -103,8 +103,9 @@ services:
   airflow-init:
     <<: *airflow-common
     container_name: immolake-airflow-init
-    entrypoint: /bin/bash
+    entrypoint: /entrypoint
     command:
+      - bash
       - -c
       - |
         mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins
