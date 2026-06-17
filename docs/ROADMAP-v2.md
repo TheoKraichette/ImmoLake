@@ -49,3 +49,12 @@
 
 - **Alerte WhatsApp** (Twilio) sur opportunités détectées.
 - Migrer les transfos `silver → gold` de pandas vers **DuckDB** (perf / scale).
+
+## Plus tard (au-delà de la v2)
+
+Pistes hors budget 1 jour, à reprendre ensuite :
+- **Observabilité** : Prometheus + Grafana (métriques Airflow via statsd-exporter, postgres-exporter).
+- **Data Quality** : câbler le `DataQualityOperator` (not_null / not_empty / no_future_date) + branching.
+- **CI** : GitHub Actions (pytest + `docker compose config` + lint) à chaque PR.
+- **Historisation par date métier** : partitionner sur `date_etablissement` / `date_mutation` (pas la date de run) pour de vraies tendances.
+- **Industrialisation pipeline** : DVF départemental (au lieu d'1 fichier/run), dépendances inter-DAG (Assets Airflow 3).
