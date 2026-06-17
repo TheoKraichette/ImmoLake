@@ -165,7 +165,7 @@ def immolake_analytics_daily():
     def load_gold_to_postgres(ds: str | None = None) -> dict[str, int]:
         run_ds = _ds(ds)
         counts = _load_gold_to_postgres(run_ds)
-        get_current_context()["ti"].log.info(
+        LOGGER.info(
             "Chargement gold -> Postgres termine pour dt=%s: %s fact_biens, %s kpi_commune_mensuel",
             run_ds,
             counts["fact_biens"],

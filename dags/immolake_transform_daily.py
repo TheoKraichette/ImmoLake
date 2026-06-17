@@ -362,7 +362,7 @@ def _attach_dimensions(fact_df: pd.DataFrame, postgres_hook: PostgresHook) -> pd
     missing_communes = sorted(fact_df.loc[missing_mask, "code_insee"].unique())
     if missing_communes:
         sample = ", ".join(missing_communes[:20])
-        get_current_context()["ti"].log.warning(
+        LOGGER.warning(
             "%s lignes avec code_insee absent de dwh.dim_commune (%s codes distincts). Exemples: %s",
             int(missing_mask.sum()),
             len(missing_communes),
@@ -373,7 +373,7 @@ def _attach_dimensions(fact_df: pd.DataFrame, postgres_hook: PostgresHook) -> pd
     fact_df = fact_df.merge(dim_dpe, on="etiquette", how="left", indicator="dpe_match")
     invalid_dpe = sorted(fact_df.loc[fact_df["dpe_match"] == "left_only", "etiquette"].dropna().unique())
     if invalid_dpe:
-        get_current_context()["ti"].log.warning("Etiquettes DPE ignorees: %s", ", ".join(invalid_dpe))
+        LOGGER.warning("Etiquettes DPE ignorees: %s", ", ".join(invalid_dpe))
     fact_df = fact_df[fact_df["dpe_match"] == "both"].drop(columns=["dpe_match"])
 
     fact_df = fact_df.merge(dim_type_bien, left_on="type_bien", right_on="type", how="left")
@@ -547,7 +547,7 @@ def immolake_transform_daily():
         fact_df = _attach_dimensions(fact_df, postgres_hook)
         output_key = _write_gold_partition(s3_hook, fact_df, run_ds)
 
-        get_current_context()["ti"].log.info(
+        LOGGER.info(
             "Ecriture gold fact_biens terminee: s3://%s/%s (%s lignes)",
             MINIO_BUCKET,
             output_key,
@@ -567,7 +567,7 @@ def immolake_transform_daily():
         kpi_df = _build_kpi_commune(fact_df, dim_dpe, run_ds)
         output_key = _write_gold_kpi_partition(s3_hook, kpi_df, run_ds)
 
-        get_current_context()["ti"].log.info(
+        LOGGER.info(
             "Ecriture gold kpi_commune terminee: s3://%s/%s (%s communes)",
             MINIO_BUCKET,
             output_key,
