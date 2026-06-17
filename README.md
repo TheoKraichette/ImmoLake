@@ -75,14 +75,18 @@ immolake/
 │   ├── hooks/
 │   │   └── ademe_api_hook.py   # Custom Hook API ADEME
 │   └── operators/
-│       └── data_quality_operator.py  # DataQualityOperator (bonus)
+│       └── data_quality_operator.py  # DataQualityOperator (ébauche bonus, non câblé)
 ├── include/
-│   └── sql/                    # SQL de service (load gold → Postgres, #15)
+│   └── sql/                    # (réservé) chargement gold → Postgres fait en Python (immolake_analytics_daily.py)
 ├── config/                     # airflow.cfg (généré au démarrage)
 └── tests/
     ├── conftest.py
     ├── test_dags.py            # import, présence, catchup=False
-    └── test_hook.py            # test unitaire du Hook (mock requests)
+    ├── test_hook.py            # Hook ADEME (mock requests)
+    ├── test_transform.py       # nettoyage silver + enrichissement DVF
+    ├── test_kpi.py             # agrégation KPI par commune
+    ├── test_serving_load.py    # chargement gold → Postgres
+    └── test_idempotence.py     # rejouer = même résultat
 ```
 
 ## Démarrage rapide
@@ -100,6 +104,10 @@ docker compose logs -f airflow-init
 ```
 
 Puis ouvrir **Airflow** (http://localhost:8080), dépauser les DAGs et les déclencher.
+
+> Les dashboards sont déjà peuplés par le snapshot (voir plus bas). Pour **rejouer le pipeline**
+> sur de vraies données, renseigner d'abord une **URL CSV DVF valide** dans `DVF_CSV_URL` (`.env`) —
+> sinon la tâche `dvf_to_raw` échoue. Ordre des DAGs : `ingest → transform → analytics` pour un même `ds`.
 
 ### Connexions Airflow (pré-câblées)
 
@@ -145,8 +153,8 @@ Tables définies dans `init-db/schema.sql` ; dimensions de référence peuplées
 ## Idempotence (obligatoire)
 
 Chaque run rejoue le même résultat. Les transformations raw→silver→gold (Parquet) écrasent
-la partition `dt=`, et au chargement **gold → Postgres** (#15) on remplace la partition du
-jour (`DELETE + INSERT WHERE dt = {{ ds }}`) :
+la partition `dt=`, et au chargement **gold → Postgres** (en Python, `_load_dataframe_idempotent`
+dans `immolake_analytics_daily.py`) on remplace la partition du jour (`DELETE + INSERT WHERE dt = {{ ds }}`) :
 
 ```sql
 BEGIN;
@@ -188,11 +196,13 @@ Couverture : 21 zones (19 grandes villes + Paris 1er/2e), ~200 k logements (éch
 
 Régénérer le snapshot depuis des données fraîches : lancer le pipeline puis `bash scripts/make_snapshot.sh`.
 
-## Automatisation (bonus Telegram)
+## Automatisation
 
-`immolake_analytics_daily` détecte les communes à forte proportion de passoires sous-cotées
-et envoie une **alerte Telegram** (renseigner `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` dans
-`.env`). Condition claire → action justifiée.
+L'automatisation du MVP, c'est l'**orchestration Airflow quotidienne idempotente** (run daté `{{ ds }}`,
+condition claire → chargement rejouable). Une **alerte Telegram** est **prévue mais non activée** dans
+`immolake_analytics_daily` (tâche `detect_and_alert`, qui se contente de logguer) : pour l'activer,
+brancher l'appel `sendMessage` avec `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`. *(Bonus — voir aussi la
+roadmap jour 2 : alerte WhatsApp via Twilio.)*
 
 ## Tests
 

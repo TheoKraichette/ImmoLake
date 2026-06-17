@@ -23,7 +23,7 @@ exposé par Metabase.
 2. **Silver** : nettoyage / typage (pandas/pyarrow) → `silver/dpe/dt=` en Parquet.
 3. **Gold** : modélisation (faits) + agrégats → `gold/fact_biens/dt=` et `gold/kpi_commune/dt=` (Parquet).
 4. **Serving** : chargement idempotent du gold → `dwh.fact_biens` et `analytics.kpi_commune_mensuel`
-   (DELETE + INSERT par `dt`), puis détection d'anomalies → alerte Telegram (bonus).
+   (DELETE + INSERT par `dt`). *(Bonus prévu, non activé : détection d'anomalies → alerte Telegram.)*
 
 ## Couches de stockage
 
