@@ -20,9 +20,9 @@ les communes / biens au meilleur rapport prix / rénovation.
               │  AdemeApiHook (Custom Hook)
               ▼
    ┌──────────────────────┐        ┌──────────────────────────────┐
-   │   MinIO (S3)         │        │   PostgreSQL (DWH)            │
-   │  raw → staging →     │ ─────► │  staging → dwh → analytics    │
-   │       curated        │        │  (modèle en étoile, Kimball)  │
+   │   MinIO (S3)         │        │   PostgreSQL (serving)        │
+   │  raw → silver →      │ ─────► │  dwh + analytics              │
+   │     gold (Parquet)   │        │  (modèle en étoile, Kimball)  │
    └──────────────────────┘        └───────────────┬──────────────┘
               ▲                                     │
        Airflow (orchestration,                      ▼
@@ -40,8 +40,8 @@ voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Service | Rôle | Accès |
 |---|---|---|
 | **Airflow 3.x** (LocalExecutor) | Orchestration | http://localhost:8080 — `airflow` / `airflow` |
-| **MinIO** | Data Lake S3 (raw/staging/curated) | http://localhost:9001 — `minio_admin` / `minio_password_2026` |
-| **PostgreSQL 18** | Data Warehouse métier | `localhost:5433` — `dwh_user` / `dwh_password`, db `immolake` |
+| **MinIO** | Data Lake S3 — médaillon `raw`/`silver`/`gold` (Parquet) | http://localhost:9001 — `minio_admin` / `minio_password_2026` |
+| **PostgreSQL 18** | Serving (dwh + analytics) pour Metabase | `localhost:5433` — `dwh_user` / `dwh_password`, db `immolake` |
 | **Metabase** | BI / dashboards | http://localhost:3000 |
 
 Conteneurs annexes : `postgres-airflow` (métadonnées Airflow, interne), `minio-init` et
@@ -62,24 +62,21 @@ immolake/
 │   ├── ARCHITECTURE.md         # Schéma détaillé + décisions (ADR)
 │   └── CONTRIBUTING.md         # Règles Git (1 issue = 1 branche)
 ├── init-db/                    # Joué au 1er démarrage de postgres-dwh
-│   ├── schema.sql              # Schémas staging/dwh/analytics + dim_dpe
+│   ├── schema.sql              # Schémas dwh/analytics + dim_dpe
 │   ├── zz1_seed_static.sql     # Seed dim_type_bien + dim_date
 │   ├── zz2_seed_dim_commune.sh # Seed dim_commune depuis communes.json
 │   └── communes.json           # Référentiel INSEE des communes (snapshot)
 ├── dags/
-│   ├── immolake_ingest_daily.py      # API → MinIO raw → staging
-│   ├── immolake_transform_daily.py   # staging → dwh (idempotent)
-│   └── immolake_analytics_daily.py   # agrégats + alerte Telegram (bonus)
+│   ├── immolake_ingest_daily.py      # API → MinIO raw (bronze)
+│   ├── immolake_transform_daily.py   # raw → silver → gold (Parquet)
+│   └── immolake_analytics_daily.py   # gold → Postgres + alerte (bonus)
 ├── plugins/
 │   ├── hooks/
 │   │   └── ademe_api_hook.py   # Custom Hook API ADEME
 │   └── operators/
 │       └── data_quality_operator.py  # DataQualityOperator (bonus)
 ├── include/
-│   └── sql/                    # SQL versionné (référencé par les DAGs)
-│       ├── refresh_dim_commune.sql
-│       ├── transform_fact_biens.sql  # pattern idempotent DELETE+INSERT
-│       └── build_kpi_commune.sql
+│   └── sql/                    # SQL de service (load gold → Postgres, #15)
 ├── config/                     # airflow.cfg (généré au démarrage)
 └── tests/
     ├── conftest.py
@@ -146,21 +143,20 @@ Tables définies dans `init-db/schema.sql` ; dimensions de référence peuplées
 
 ## Idempotence (obligatoire)
 
-Chaque run daté `{{ ds }}` rejoue le même résultat via `DELETE + INSERT` par partition
-(voir `include/sql/transform_fact_biens.sql`) :
+Chaque run rejoue le même résultat. Les transformations raw→silver→gold (Parquet) écrasent
+la partition `dt=`, et au chargement **gold → Postgres** (#15) on remplace la partition du
+jour (`DELETE + INSERT WHERE dt = {{ ds }}`) :
 
 ```sql
 BEGIN;
   DELETE FROM dwh.fact_biens WHERE dt = '{{ ds }}';
-  INSERT INTO dwh.fact_biens SELECT ... FROM staging.dpe WHERE dt = '{{ ds }}';
+  -- INSERT depuis le gold (Parquet) chargé en mémoire
 COMMIT;
 ```
 
-**Vérification** (rejouer 2x doit donner le même `COUNT(*)`) :
+**Vérification** (rejouer 2x le pipeline doit donner le même `COUNT(*)`) :
 
 ```bash
-docker compose exec airflow-scheduler airflow dags test immolake_transform_daily 2026-06-17
-docker compose exec airflow-scheduler airflow dags test immolake_transform_daily 2026-06-17
 docker compose exec postgres-dwh psql -U dwh_user -d immolake \
   -c "SELECT COUNT(*) FROM dwh.fact_biens WHERE dt='2026-06-17';"
 ```
