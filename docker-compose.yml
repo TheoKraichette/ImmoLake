@@ -82,7 +82,7 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Crée le bucket et les zones raw/staging/curated
+  # Crée le bucket et les zones du médaillon (raw / silver / gold)
   minio-init:
     image: minio/mc:latest
     container_name: immolake-minio-init
@@ -93,9 +93,10 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minio_admin} ${MINIO_ROOT_PASSWORD:-minio_password_2026};
       mc mb --ignore-existing local/${MINIO_BUCKET:-immolake};
-      mc cp /dev/null local/${MINIO_BUCKET:-immolake}/raw/.keep;
-      mc cp /dev/null local/${MINIO_BUCKET:-immolake}/staging/.keep;
-      mc cp /dev/null local/${MINIO_BUCKET:-immolake}/curated/.keep;
+      : > /tmp/.keep;
+      mc cp /tmp/.keep local/${MINIO_BUCKET:-immolake}/raw/.keep;
+      mc cp /tmp/.keep local/${MINIO_BUCKET:-immolake}/silver/.keep;
+      mc cp /tmp/.keep local/${MINIO_BUCKET:-immolake}/gold/.keep;
       "
 
   # Migrations + création de l'utilisateur admin
