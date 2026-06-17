@@ -20,5 +20,5 @@
 
 - le DAG concerné tourne en *success* ;
 - transformations **idempotentes** (rejouer un run = même résultat) ;
-- les tests passent (`make test`) ;
+- les tests passent (`docker compose exec airflow-scheduler pytest tests/ -v`) ;
 - aucun secret commité (`.env` reste local).
