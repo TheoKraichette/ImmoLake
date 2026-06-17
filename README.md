@@ -57,10 +57,10 @@ immolake/
 ├── docker-compose.yml          # Stack complète (Airflow + MinIO + Postgres + Metabase)
 ├── .env.example                # Variables (copier en .env)
 ├── requirements.txt
-├── CONTRIBUTING.md             # Règles Git (1 issue = 1 branche)
 ├── .gitattributes  .gitignore
 ├── docs/
-│   └── ARCHITECTURE.md         # Schéma détaillé + décisions (ADR)
+│   ├── ARCHITECTURE.md         # Schéma détaillé + décisions (ADR)
+│   └── CONTRIBUTING.md         # Règles Git (1 issue = 1 branche)
 ├── init-db/                    # Joué au 1er démarrage de postgres-dwh
 │   ├── schema.sql              # Schémas staging/dwh/analytics + dim_dpe
 │   ├── zz1_seed_static.sql     # Seed dim_type_bien + dim_date
@@ -191,15 +191,7 @@ docker compose exec airflow-scheduler pytest tests/ -v
 ## Contribution
 
 Workflow obligatoire : **1 issue = 1 branche**, PR vers `main`, relecture, puis merge.
-**Jamais de commit direct sur `main`.** Détails dans [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Répartition (3 devs)
-
-| Dev | Lot | Fichiers |
-|---|---|---|
-| **A** | Ingestion | `plugins/hooks/ademe_api_hook.py`, `dags/immolake_ingest_daily.py` |
-| **B** | Entrepôt | `init-db/`, `dags/immolake_transform_daily.py`, `include/sql/*.sql` |
-| **C** | Serving | `dags/immolake_analytics_daily.py`, Metabase, Telegram, `tests/`, doc |
+**Jamais de commit direct sur `main`.** Détails dans [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
 ## Dépannage
 
@@ -217,3 +209,4 @@ Workflow obligatoire : **1 issue = 1 branche**, PR vers `main`, relecture, puis 
 - [API DPE logements (ADEME)](https://data.ademe.fr/datasets/dpe03existant) — `GET /data-fair/api/v1/datasets/dpe03existant/lines`
 - [Référentiel communes INSEE](https://geo.api.gouv.fr/communes) — seed de `dim_commune`
 - [DVF — Demandes de Valeurs Foncières](https://www.data.gouv.fr/datasets/dvf)
+- [DVF géolocalisées](https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees) — lat/long des transactions (carte Metabase, rattachement commune)
