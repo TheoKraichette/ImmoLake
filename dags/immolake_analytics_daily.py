@@ -175,7 +175,7 @@ def immolake_analytics_daily():
 
     @task
     def detect_and_alert(load_counts: dict[str, int]) -> None:
-        LOGGER.info("Alerte Telegram non activee pour le MVP. Chargement: %s", load_counts)
+        LOGGER.info("Alerte WhatsApp non activee pour le MVP (bonus). Chargement: %s", load_counts)
 
     detect_and_alert(load_gold_to_postgres())
 

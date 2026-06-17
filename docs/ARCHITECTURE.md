@@ -7,23 +7,27 @@ un entrepôt structuré (PostgreSQL) pour le modèle propre, orchestré par Airf
 exposé par Metabase.
 
 ```
- Sources           Ingestion        Data Lake (MinIO)         Data Warehouse (PostgreSQL)     BI
- ┌──────────┐      ┌──────────┐     ┌──────────────────┐      ┌──────────────────────────┐   ┌──────────┐
- │ API ADEME│─────►│AdemeHook │────►│ raw → silver →   │─────►│ dwh + analytics (serving)│──►│ Metabase │
- │   DVF    │      │ (Airflow)│     │  gold (Parquet)  │      │   (étoile / Kimball)     │   │          │
- └──────────┘      └──────────┘     └──────────────────┘      └──────────────────────────┘   └──────────┘
-                        ▲                                                  │
-                   Orchestration Airflow (idempotence par dt)             ▼
-                                                              Alerte Telegram (bonus)
+ Sources              Orchestration       Data Lake (MinIO)                     Serving                 BI
+ ┌──────────┐         ┌──────────┐        ┌────────────────────────────┐        ┌──────────────────┐    ┌──────────┐
+ │ API ADEME│────────►│ Airflow  │───────►│ raw/dpe                    │        │ dwh.fact_biens   │───►│ Metabase │
+ │ DPE      │         │          │        │ silver/dpe                 │        │ analytics.kpi_*  │    │          │
+ └──────────┘         │          │        │                            │        └──────────────────┘    └──────────┘
+ ┌──────────┐         │          │        │ raw/dvf                    │                 ▲
+ │ CSV DVF  │────────►│          │───────►│ silver/dvf                 │                 │
+ └──────────┘         └──────────┘        │ gold/fact_biens            │─────────────────┘
+                                          │ gold/kpi_commune           │
+                                          └────────────────────────────┘
 ```
 
 ## Flux d'un run quotidien
 
-1. **Bronze** : le Hook appelle l'API ADEME → JSON brut déposé dans `raw/dpe/dt=` (MinIO).
-2. **Silver** : nettoyage / typage (pandas/pyarrow) → `silver/dpe/dt=` en Parquet.
-3. **Gold** : modélisation (faits) + agrégats → `gold/fact_biens/dt=` et `gold/kpi_commune/dt=` (Parquet).
-4. **Serving** : chargement idempotent du gold → `dwh.fact_biens` et `analytics.kpi_commune_mensuel`
-   (DELETE + INSERT par `dt`). *(Bonus prévu, non activé : détection d'anomalies → alerte Telegram.)*
+1. **Bronze DPE** : le Hook appelle l'API ADEME → JSON brut déposé dans `raw/dpe/dt=`.
+2. **Bronze DVF** : Airflow télécharge le CSV `DVF_CSV_URL` → `raw/dvf/dt=`.
+3. **Silver** : nettoyage / typage avec pandas/pyarrow → `silver/dpe/dt=` et `silver/dvf/dt=`.
+4. **Gold facts** : construction de `gold/fact_biens/dt=` avec rattachement dimensions et enrichissement prix DVF.
+5. **Gold KPIs** : agrégation de `fact_biens` → `gold/kpi_commune/dt=`.
+6. **Serving** : chargement idempotent du gold → `dwh.fact_biens` et `analytics.kpi_commune_mensuel`
+   (`DELETE + INSERT` par `dt`). *(Bonus prévu, non activé : alerte WhatsApp via Twilio.)*
 
 ## Couches de stockage
 
@@ -31,9 +35,12 @@ exposé par Metabase.
 
 | Zone | Rôle |
 |---|---|
-| `raw` | JSON brut de l'API, rejouable (bronze) |
-| `silver` | données nettoyées / typées / dédupliquées (Parquet) |
-| `gold` | faits + KPIs modélisés (Parquet) |
+| `raw/dpe` | JSON brut ADEME, rejouable |
+| `raw/dvf` | CSV DVF brut téléchargé |
+| `silver/dpe` | DPE nettoyés, typés, dédupliqués |
+| `silver/dvf` | transactions/prix DVF nettoyés |
+| `gold/fact_biens` | table de faits Parquet enrichie prix/DPE |
+| `gold/kpi_commune` | indicateurs métier par commune |
 
 **Serving (PostgreSQL) :**
 
@@ -41,6 +48,30 @@ exposé par Metabase.
 |---|---|
 | `dwh` | modèle en étoile (dimensions + faits), intégrité FK |
 | `analytics` | agrégats pré-calculés pour Metabase |
+
+## Choix de modélisation MVP
+
+### Enrichissement prix DVF
+
+Le matching exact DPE ↔ transaction DVF nécessite des clés fines (adresse normalisée,
+parcelle, géolocalisation fiable). Pour rester robuste en MVP, ImmoLake enrichit les biens
+avec un **prix/m² médian DVF par `code_insee + type_bien`** :
+
+1. `silver/dvf` calcule `prix_m2 = prix / surface` quand la colonne n'existe pas.
+2. `gold/fact_biens` joint ce référentiel agrégé sur `code_insee` et `type_bien`.
+3. `prix = surface * prix_m2` est recalculé dans le gold.
+
+Cette approche est explicable, rejouable et suffisante pour produire des KPI prix par commune.
+Elle pourra évoluer vers un matching adresse/parcelle si les données sont disponibles.
+
+### KPI communaux
+
+`gold/kpi_commune` agrège `gold/fact_biens` par commune :
+
+- `prix_m2_median` : médiane des prix/m² enrichis ;
+- `pct_passoires` : part de DPE F/G ;
+- `decote_passoire_pct` : écart moyen prix/m² F/G vs non-passoires ;
+- `nb_transactions` : nombre de biens dans le fait.
 
 ---
 
@@ -91,3 +122,13 @@ pour que Metabase interroge du SQL.
 DuckDB n'est **pas** utilisé : pour le volume du projet, charger le gold dans Postgres suffit
 et évite une techno de plus. Conséquences : pas de schéma `staging` dans Postgres (le silver
 vit dans le lac) et les transformations ne sont plus écrites en SQL.
+
+## Exploitation Metabase
+
+Metabase interroge uniquement PostgreSQL :
+
+- `dwh.fact_biens` pour les analyses détaillées ;
+- `analytics.kpi_commune_mensuel` pour les dashboards agrégés.
+
+La connexion Metabase utilise le réseau Docker interne : host `postgres-dwh`, port `5432`,
+base `immolake`, utilisateur `dwh_user`.
