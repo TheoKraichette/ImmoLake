@@ -75,8 +75,11 @@ immolake/
 ├── requirements.txt  .gitignore
 ├── docs/
 │   └── ARCHITECTURE.md         # Schéma détaillé + décisions (ADR)
-├── init-db/
-│   └── schema.sql              # Schémas staging/dwh/analytics + dim_dpe pré-rempli
+├── init-db/                    # Joué au 1er démarrage de postgres-dwh
+│   ├── schema.sql              # Schémas staging/dwh/analytics + dim_dpe
+│   ├── zz1_seed_static.sql     # Seed dim_type_bien + dim_date
+│   ├── zz2_seed_dim_commune.sh # Seed dim_commune depuis communes.json
+│   └── communes.json           # Référentiel INSEE des communes (snapshot)
 ├── dags/
 │   ├── immolake_ingest_daily.py      # API → MinIO raw → staging
 │   ├── immolake_transform_daily.py   # staging → dwh (idempotent)
