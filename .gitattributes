@@ -1,0 +1,2 @@
+# Fins de ligne LF dans le dépôt (cohérence multi-OS, Makefile/scripts).
+* text=auto eol=lf

@@ -1,0 +1,5 @@
+# Dépendances Python du projet (dev local + référence pour _PIP_ADDITIONAL_REQUIREMENTS)
+apache-airflow-providers-amazon
+requests
+# Tests
+pytest
