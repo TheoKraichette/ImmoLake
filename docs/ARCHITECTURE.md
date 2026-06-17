@@ -27,7 +27,7 @@ exposé par Metabase.
 4. **Gold facts** : construction de `gold/fact_biens/dt=` avec rattachement dimensions et enrichissement prix DVF.
 5. **Gold KPIs** : agrégation de `fact_biens` → `gold/kpi_commune/dt=`.
 6. **Serving** : chargement idempotent du gold → `dwh.fact_biens` et `analytics.kpi_commune_mensuel`
-   (`DELETE + INSERT` par `dt`), puis alerte Telegram désactivée pour le MVP.
+   (`DELETE + INSERT` par `dt`). *(Bonus prévu, non activé : alerte WhatsApp via Twilio.)*
 
 ## Couches de stockage
 

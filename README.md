@@ -83,17 +83,18 @@ immolake/
 │   ├── hooks/
 │   │   └── ademe_api_hook.py   # Custom Hook API ADEME
 │   └── operators/
-│       └── data_quality_operator.py  # DataQualityOperator (bonus)
+│       └── data_quality_operator.py  # DataQualityOperator (ébauche bonus, non câblé)
 ├── include/
-│   └── sql/                    # réservé aux scripts SQL complémentaires
+│   └── sql/                    # (réservé) chargement gold → Postgres fait en Python (immolake_analytics_daily.py)
 ├── config/                     # airflow.cfg (généré au démarrage)
 └── tests/
     ├── conftest.py
     ├── test_dags.py            # import, présence, catchup=False
-    ├── test_hook.py            # Hook ADEME mocké
-    ├── test_transform.py       # nettoyage DPE/DVF + enrichissement prix
-    ├── test_kpi.py             # agrégation kpi_commune
-    └── test_idempotence.py     # réécriture idempotente des partitions gold
+    ├── test_hook.py            # Hook ADEME (mock requests)
+    ├── test_transform.py       # nettoyage silver + enrichissement DVF
+    ├── test_kpi.py             # agrégation KPI par commune
+    ├── test_serving_load.py    # chargement gold → Postgres
+    └── test_idempotence.py     # rejouer = même résultat
 ```
 
 ## Démarrage rapide
@@ -113,6 +114,10 @@ docker compose logs -f airflow-init
 
 Puis ouvrir **Airflow** (http://localhost:8080), dépauser les DAGs et les déclencher dans
 l'ordre logique : ingestion DPE, transformation gold, puis chargement serving.
+
+> Les dashboards sont déjà peuplés par le snapshot (voir plus bas). Pour **rejouer le pipeline**
+> sur de vraies données, renseigner d'abord une **URL CSV DVF valide** dans `DVF_CSV_URL` (`.env`) —
+> sinon la tâche `dvf_to_raw` échoue. Ordre des DAGs : `ingest → transform → analytics` pour un même `ds`.
 
 ### Connexions Airflow (pré-câblées)
 
@@ -175,7 +180,7 @@ Chaque run rejoue le même résultat :
 - `raw/dpe/dt=` et `raw/dvf/dt=` sont remplacés pour la date du run ;
 - `silver/dpe/dt=` et `silver/dvf/dt=` sont réécrits en Parquet ;
 - `gold/fact_biens/dt=` et `gold/kpi_commune/dt=` sont supprimés puis recréés ;
-- au chargement **gold → Postgres**, on remplace la partition du jour (`DELETE + INSERT WHERE dt = {{ ds }}`).
+- au chargement **gold → Postgres**, on remplace la partition du jour (`DELETE + INSERT WHERE dt = {{ ds }}`, via `_load_dataframe_idempotent` dans `immolake_analytics_daily.py`).
 
 ```sql
 BEGIN;
@@ -193,28 +198,37 @@ docker compose exec postgres-dwh psql -U dwh_user -d immolake \
 
 ## Dashboards Metabase (≥ 2)
 
-1. **Marché par commune** — prix/m² médian, volume, carte.
-2. **Impact énergétique** — décote prix/m² F/G vs A/B, % de passoires.
-3. *(bonus)* **Détecteur d'opportunités** — biens sous la médiane communale (anomalies).
+Provisionnés **par code** (idempotent) via `scripts/setup_metabase.py` — connexion DWH +
+questions SQL + 2 dashboards (avec encarts explicatifs), sans clics manuels.
 
+1. **Marché par commune** — prix/m² médian, nombre de logements, détail par commune.
+2. **Impact énergétique (DPE)** — % de passoires (F/G), répartition des étiquettes A→G.
+
+Provisioning (une fois la stack démarrée) :
+
+```bash
+docker compose exec -T airflow-scheduler python - < scripts/setup_metabase.py
+```
+
+Dashboards sur http://localhost:3000 (`admin@immolake.local` / `MB_ADMIN_PASSWORD`).
 Connexion Metabase → PostgreSQL : host `postgres-dwh`, port **5432** (interne), db `immolake`.
 
-Les dashboards s'appuient sur :
+## Données de démonstration (snapshot)
 
-- `dwh.fact_biens` pour le détail des biens enrichis ;
-- `analytics.kpi_commune_mensuel` pour les indicateurs par commune.
+Le serving (`dwh.fact_biens` + `analytics.kpi_commune_mensuel`) est **pré-rempli dès le 1er
+`docker compose up`** via un snapshot committé (`init-db/snapshot/*.csv.gz`, restauré par
+`init-db/zz9_restore_snapshot.sh`) → **tout le monde a des dashboards peuplés sans relancer le pipeline.**
+Couverture : 21 zones (19 grandes villes + Paris 1er/2e), ~200 k logements (échantillon).
 
-Captures à insérer dans le dossier de soutenance après configuration Metabase :
+Régénérer le snapshot depuis des données fraîches : lancer le pipeline puis `bash scripts/make_snapshot.sh`.
 
-- marché par commune ;
-- impact énergétique DPE.
+## Automatisation
 
-## Automatisation (bonus Telegram)
-
-`immolake_analytics_daily` charge le gold dans PostgreSQL et garde un point d'extension pour
-une alerte Telegram. Pour le MVP, l'alerte est désactivée et le DAG loggue simplement le
-résultat du chargement. Les variables `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` restent
-réservées à cette évolution.
+L'automatisation du MVP, c'est l'**orchestration Airflow quotidienne idempotente** (run daté `{{ ds }}`,
+condition claire → chargement rejouable). Une **alerte WhatsApp** (via Twilio) est **prévue mais non
+activée** dans `immolake_analytics_daily` (tâche `detect_and_alert`, qui se contente de logguer) : pour
+l'activer, brancher l'appel Twilio avec les variables `TWILIO_*` / `WHATSAPP_TO` du `.env`.
+*(Bonus — détaillé dans la roadmap jour 2.)*
 
 ## Tests
 
