@@ -18,29 +18,33 @@ def render_sidebar_filters() -> Filters:
 
     with st.sidebar:
         st.header("Filtres")
-        regions = st.multiselect("Region", options.regions)
-        departements = st.multiselect("Departement", options.departements)
-        communes = st.multiselect("Commune", options.communes)
-        types_bien = st.multiselect("Type de bien", options.types_bien, default=options.types_bien[:2])
-        etiquettes = st.multiselect("Etiquette DPE", options.etiquettes)
-        passoires_only = st.checkbox("Passoires F-G", value=False)
+        with st.expander("Localisation", expanded=True):
+            regions = st.multiselect("Region", options.regions)
+            departements = st.multiselect("Departement", options.departements)
+            communes = st.multiselect("Commune", options.communes)
 
-        prix_m2 = st.slider(
-            "Prix/m2",
-            min_value=options.prix_m2_min,
-            max_value=options.prix_m2_max,
-            value=(options.prix_m2_min, options.prix_m2_max),
-            step=100,
-        )
-        surface = st.slider(
-            "Surface",
-            min_value=options.surface_min,
-            max_value=options.surface_max,
-            value=(options.surface_min, options.surface_max),
-            step=5,
-        )
-        nb_dpe_min = st.number_input("nb_dpe minimum", min_value=1, max_value=1000, value=30, step=5)
-        opportunite_k = st.slider("Seuil k opportunites", 0.5, 3.0, 1.2, 0.1)
+        with st.expander("Bien et energie", expanded=True):
+            types_bien = st.multiselect("Type de bien", options.types_bien, default=options.types_bien[:2])
+            etiquettes = st.multiselect("Etiquette DPE", options.etiquettes)
+            passoires_only = st.checkbox("Passoires F-G", value=False)
+            surface = st.slider(
+                "Surface",
+                min_value=options.surface_min,
+                max_value=options.surface_max,
+                value=(options.surface_min, options.surface_max),
+                step=5,
+            )
+
+        with st.expander("Marche", expanded=True):
+            prix_m2 = st.slider(
+                "Prix/m2",
+                min_value=options.prix_m2_min,
+                max_value=options.prix_m2_max,
+                value=(options.prix_m2_min, options.prix_m2_max),
+                step=100,
+            )
+            nb_dpe_min = st.number_input("nb_dpe minimum", min_value=1, max_value=1000, value=30, step=5)
+            opportunite_k = st.slider("Seuil k opportunites", 0.5, 3.0, 1.2, 0.1)
 
     return Filters(
         regions=_as_tuple(regions),
