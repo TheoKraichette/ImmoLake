@@ -1,1 +1,1 @@
-"""Librairie interne du front Streamlit (connexion DuckDB, requêtes, filtres)."""
+"""Shared helpers for the ImmoLake Streamlit app."""

@@ -1,6 +1,6 @@
-streamlit
 duckdb
+plotly
 pandas
 pyarrow
 pydeck
-plotly
+streamlit

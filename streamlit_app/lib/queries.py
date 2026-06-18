@@ -1,125 +1,163 @@
-"""Couche analytique : requêtes DuckDB sur les marts/gold Parquet de MinIO, pour le front.
+"""Accès données DuckDB pour le front Streamlit, branché sur les VRAIS marts MinIO.
 
-Lit UNIQUEMENT du Parquet (gold + ref), sans Postgres. Chaque helper public est caché
-(`@st.cache_data`) et renvoie un DataFrame pandas prêt pour Streamlit.
+Interface (Filters / build_where / pages) conservée de v2-8 ; la source de données passe de
+`kpi_commune` + placeholders + démo en dur aux marts réels produits en v2-4 :
+- `get_market_data`   -> mart_commune_type (prix/m² par commune×type) × mart_commune (indice/z réels)
+- `get_dpe_distribution` -> fact_biens (répartition A→G réelle, filtrée)
+- `get_opportunities` -> mart_opportunites (sous-cotation commune vs département réelle)
 
-Règle perf (15M) : on interroge des **marts pré-agrégés** ; le grain ligne (`fact_biens`)
-n'est lu qu'avec un filtre commune/département (jamais un scan total sans WHERE).
+Règle perf (15M) : marts pré-agrégés ; `fact_biens` n'est lu que filtré. WHERE paramétré
+(anti-injection) via `build_where`. Plus de fallback démo : on affiche les vraies données.
 """
 from __future__ import annotations
+
+from dataclasses import dataclass, replace
 
 import pandas as pd
 import streamlit as st
 
-from lib.connection import BUCKET, get_con, gold, ref
-
-# Marts (snapshot, un seul fichier) vs fact_biens (partitionné dt= -> **).
-MART_COMMUNE = f"s3://{BUCKET}/gold/mart_commune/*.parquet"
-MART_COMMUNE_TYPE = f"s3://{BUCKET}/gold/mart_commune_type/*.parquet"
-MART_OPPORTUNITES = f"s3://{BUCKET}/gold/mart_opportunites/*.parquet"
-FACT_BIENS = gold("fact_biens")
-DIM_COMMUNE = ref("dim_commune")
+from lib.connection import bucket, get_con
+from lib.filter_state import Filters
+from lib.filters_sql import build_where
 
 
-def _df(sql: str, params: list | None = None) -> pd.DataFrame:
-    """Exécute une requête (curseur dédié = sûr entre sessions) -> DataFrame pandas."""
-    return get_con().cursor().execute(sql, params or []).fetch_df()
+@dataclass(frozen=True)
+class FilterOptions:
+    regions: list[str]
+    departements: list[str]
+    communes: list[str]
+    types_bien: list[str]
+    etiquettes: list[str]
+    prix_m2_min: int
+    prix_m2_max: int
+    surface_min: int
+    surface_max: int
 
 
-def _geo_where(prefix: str, params: list, region=None, departement=None, commune=None) -> list[str]:
-    """Construit des clauses WHERE paramétrées (anti-injection) sur région/département/commune."""
-    clauses = []
-    if region:
-        clauses.append(f"{prefix}region = ?"); params.append(region)
-    if departement:
-        clauses.append(f"{prefix}departement = ?"); params.append(departement)
-    if commune:
-        clauses.append(f"{prefix}code_insee = ?"); params.append(commune)
-    return clauses
+def _mart(name: str) -> str:
+    """Chemin s3:// d'un mart (un seul fichier snapshot)."""
+    return f"s3://{bucket()}/gold/{name}/*.parquet"
 
 
-@st.cache_data(ttl=600)
-def kpis_france() -> dict:
-    """KPIs globaux (page d'accueil), depuis le mart commune."""
-    row = _df(
-        f"""
-        SELECT count(*) AS nb_communes,
-               COALESCE(sum(nb_dpe), 0) AS nb_biens,
-               median(prix_m2_median) AS prix_m2_median_national
-        FROM read_parquet('{MART_COMMUNE}')
-        """
-    ).iloc[0]
-    median = row.prix_m2_median_national
-    return {
-        "nb_communes": int(row.nb_communes),
-        "nb_biens": int(row.nb_biens),
-        "prix_m2_median_national": None if pd.isna(median) else round(float(median)),
-    }
+def _fact() -> str:
+    return f"s3://{bucket()}/gold/fact_biens/**/*.parquet"
 
 
-@st.cache_data(ttl=600)
-def options_filtres() -> dict:
-    """Valeurs distinctes pour les filtres sidebar (régions, départements, types de bien)."""
-    geo = _df(f"SELECT DISTINCT region, departement FROM read_parquet('{MART_COMMUNE}')")
-    types = _df(f"SELECT DISTINCT type_bien FROM read_parquet('{MART_COMMUNE_TYPE}') ORDER BY 1")
-    return {
-        "regions": sorted(geo["region"].dropna().unique().tolist()),
-        "departements": sorted(geo["departement"].dropna().unique().tolist()),
-        "types_bien": types["type_bien"].dropna().tolist(),
-    }
+def _dim_commune() -> str:
+    return f"s3://{bucket()}/ref/dim_commune/*.parquet"
 
 
-@st.cache_data(ttl=600)
-def marche_communes(region=None, departement=None, seuil_nb_dpe: int = 30) -> pd.DataFrame:
-    """Classement des communes : prix/m² médian + NOMS + dpt/région + indicateurs territoriaux."""
-    params: list = [seuil_nb_dpe]
-    where = ["nb_dpe >= ?"] + _geo_where("", params, region=region, departement=departement)
-    return _df(
-        f"""
-        SELECT code_insee, nom, departement, region, population, prix_m2_median, nb_dpe,
-               pct_passoires, conso_energie_moy, indice_sous_cotation, z_prix_dpt, rang_prix_dpt
-        FROM read_parquet('{MART_COMMUNE}')
-        WHERE {' AND '.join(where)}
-        ORDER BY prix_m2_median DESC
-        """,
-        params,
+def _run_query(sql: str, params: tuple = ()) -> pd.DataFrame:
+    """Curseur DuckDB dédié (sûr entre sessions) ; DataFrame vide si la donnée manque."""
+    try:
+        return get_con().cursor().execute(sql, params).fetchdf()
+    except Exception:
+        return pd.DataFrame()
+
+
+def _market_sql() -> str:
+    """Marché au grain commune×type : prix/m² réel + indicateurs territoriaux (indice/z) de la commune."""
+    return f"""
+    SELECT
+        m.nom                       AS commune,
+        m.code_insee,
+        m.departement,
+        m.region,
+        m.type_bien,
+        NULL                        AS etiquette,
+        m.prix_m2_median            AS prix_m2,
+        NULL::DOUBLE                AS surface,
+        m.nb_dpe,
+        m.pct_passoires,
+        mc.conso_energie_moy        AS conso_energie_med,
+        mc.indice_sous_cotation,
+        mc.z_prix_dpt               AS z,
+        NULL::DOUBLE                AS score_opportunite,
+        NULL::DOUBLE                AS latitude,
+        NULL::DOUBLE                AS longitude
+    FROM read_parquet('{_mart('mart_commune_type')}') m
+    LEFT JOIN read_parquet('{_mart('mart_commune')}') mc ON mc.code_insee = m.code_insee
+    """
+
+
+@st.cache_data(ttl=300)
+def get_market_data(filters: Filters | None = None) -> pd.DataFrame:
+    """Marché par commune×type. Les filtres étiquette/surface/passoires (grain bien) sont ignorés ici."""
+    filters = filters or Filters()
+    market = replace(filters, etiquettes=(), passoires_only=False, surface_min=None, surface_max=None)
+    where = build_where(market, alias="m")
+    sql = f"SELECT * FROM ({_market_sql()}) m {where.sql} ORDER BY prix_m2 DESC"
+    return _run_query(sql, where.params)
+
+
+@st.cache_data(ttl=300)
+def get_filter_options() -> FilterOptions:
+    df = get_market_data(Filters(nb_dpe_min=1))
+    if df.empty:
+        return FilterOptions([], [], [], ["appartement", "maison"], list("ABCDEFG"), 0, 5000, 0, 150)
+    return FilterOptions(
+        regions=sorted(df["region"].dropna().astype(str).unique().tolist()),
+        departements=sorted(df["departement"].dropna().astype(str).unique().tolist()),
+        communes=sorted(df["commune"].dropna().astype(str).unique().tolist()),
+        types_bien=sorted(df["type_bien"].dropna().astype(str).unique().tolist()),
+        etiquettes=list("ABCDEFG"),
+        prix_m2_min=max(0, int(df["prix_m2"].min() // 100 * 100)),
+        prix_m2_max=int(df["prix_m2"].max() // 100 * 100 + 500),
+        surface_min=0,
+        surface_max=150,
     )
 
 
-@st.cache_data(ttl=600)
-def repartition_dpe(region=None, departement=None, commune=None) -> pd.DataFrame:
-    """Répartition des étiquettes A→G (grain ligne `fact_biens`, joint à `ref` pour filtrer)."""
-    params: list = []
-    geo = _geo_where("c.", params, region=region, departement=departement, commune=commune)
-    join_where = " AND ".join(["f.code_insee = c.code_insee"] + geo)
-    return _df(
-        f"""
-        SELECT f.etiquette, count(*) AS nb
-        FROM read_parquet('{FACT_BIENS}') f
-        JOIN read_parquet('{DIM_COMMUNE}') c ON {join_where}
-        GROUP BY f.etiquette
-        ORDER BY f.etiquette
-        """,
-        params,
-    )
+@st.cache_data(ttl=300)
+def get_dpe_distribution(filters: Filters) -> pd.DataFrame:
+    """Répartition A→G réelle par commune (grain `fact_biens`, joint à `ref`, filtré géo/type/étiquette)."""
+    grain = replace(filters, prix_m2_min=None, prix_m2_max=None, surface_min=None, surface_max=None, nb_dpe_min=0)
+    where = build_where(grain, alias="m")
+    sql = f"""
+        SELECT commune, etiquette, count(*) AS nb FROM (
+            SELECT c.nom AS commune, c.departement, c.region, f.type_bien, f.etiquette
+            FROM read_parquet('{_fact()}') f
+            JOIN read_parquet('{_dim_commune()}') c USING (code_insee)
+        ) m {where.sql}
+        GROUP BY commune, etiquette
+        ORDER BY commune, etiquette
+    """
+    return _run_query(sql, where.params)
 
 
-@st.cache_data(ttl=600)
-def opportunites(departement=None, type_bien=None) -> pd.DataFrame:
-    """Communes sous-cotées (mart_opportunites, base détecteur commune vs département)."""
-    params: list = []
-    where = ["est_opportunite"]
-    if departement:
-        where.append("departement = ?"); params.append(departement)
-    if type_bien:
-        where.append("type_bien = ?"); params.append(type_bien)
-    return _df(
-        f"""
-        SELECT code_insee, nom, departement, type_bien, prix_m2_median, prix_m2_median_dpt,
-               ecart_pct, z, nb_dpe, pct_passoires
-        FROM read_parquet('{MART_OPPORTUNITES}')
-        WHERE {' AND '.join(where)}
-        ORDER BY z
-        """,
-        params,
+def _opportunites_sql() -> str:
+    return f"""
+    SELECT
+        nom                         AS commune,
+        code_insee,
+        departement,
+        region,
+        type_bien,
+        NULL                        AS etiquette,
+        prix_m2_median              AS prix_m2,
+        NULL::DOUBLE                AS surface,
+        nb_dpe,
+        pct_passoires,
+        NULL::DOUBLE                AS conso_energie_med,
+        ecart_pct                   AS indice_sous_cotation,
+        z,
+        NULL::DOUBLE                AS score_opportunite,
+        NULL::DOUBLE                AS latitude,
+        NULL::DOUBLE                AS longitude
+    FROM read_parquet('{_mart('mart_opportunites')}')
+    WHERE est_opportunite
+    """
+
+
+@st.cache_data(ttl=300)
+def get_opportunities(filters: Filters) -> pd.DataFrame:
+    """Communes sous-cotées (mart_opportunites : commune vs département). Scoring fin -> v2-7."""
+    opp = replace(filters, etiquettes=(), passoires_only=False, surface_min=None, surface_max=None)
+    where = build_where(opp, alias="m")
+    df = _run_query(f"SELECT * FROM ({_opportunites_sql()}) m {where.sql} ORDER BY z", where.params)
+    if df.empty:
+        return df
+    df["etiquette_opportunite"] = df["pct_passoires"].apply(
+        lambda p: "sous-cotee + parc passoires" if p >= 20 else "sous-cotee"
     )
+    return df
