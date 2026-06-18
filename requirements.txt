@@ -4,5 +4,6 @@ apache-airflow-providers-postgres
 pandas
 pyarrow
 requests
+duckdb
 # Tests
 pytest
