@@ -5,10 +5,11 @@ import streamlit as st
 
 from lib import queries
 from lib.filters import render_sidebar_filters
+from lib import ui
 
 
-st.set_page_config(page_title="Comparateur - ImmoLake", layout="wide")
-st.title("Comparateur")
+ui.configure_page("Comparateur")
+ui.hero("Comparateur", "Comparer 2 a 4 communes sur les indicateurs marche et energie.", ["prix", "energie", "volume"])
 
 filters = render_sidebar_filters()
 available = queries.get_market_data(filters)
@@ -18,40 +19,56 @@ selected = st.multiselect("Communes", choices, default=default, max_selections=4
 df = queries.get_comparison_data(tuple(selected), filters)
 
 if len(selected) < 2:
-    st.warning("Selectionner 2 a 4 communes.")
+    ui.empty_state("Selectionner 2 a 4 communes.")
 else:
+    ui.metric_row(
+        [
+            ("Communes", ui.format_int(len(df)), None),
+            ("Prix/m2 median", ui.format_eur_m2(df["prix_m2"].median()), None),
+            ("Passoires moyennes", ui.format_pct(df["pct_passoires"].mean()), None),
+            ("DPE", ui.format_int(df["nb_dpe"].sum()), None),
+        ]
+    )
+
     st.dataframe(
         df[["commune", "prix_m2", "pct_passoires", "conso_energie_med", "indice_sous_cotation", "nb_dpe"]],
         use_container_width=True,
         hide_index=True,
+        column_config={
+            "prix_m2": st.column_config.NumberColumn("Prix/m2", format="%.0f EUR"),
+            "pct_passoires": st.column_config.NumberColumn("Passoires", format="%.1f %%"),
+            "conso_energie_med": st.column_config.NumberColumn("Conso", format="%.0f"),
+            "indice_sous_cotation": st.column_config.NumberColumn("Sous-cotation", format="%.1f %%"),
+            "nb_dpe": st.column_config.NumberColumn("DPE", format="%d"),
+        },
     )
 
     metrics = ["prix_m2", "pct_passoires", "conso_energie_med", "indice_sous_cotation"]
     melted = df.melt(id_vars=["commune"], value_vars=metrics, var_name="indicateur", value_name="valeur")
-    st.plotly_chart(
-        px.bar(
-            melted,
-            x="indicateur",
-            y="valeur",
-            color="commune",
-            barmode="group",
-            labels={"indicateur": "Indicateur", "valeur": "Valeur"},
-        ),
-        use_container_width=True,
+    bar_fig = px.bar(
+        melted,
+        x="indicateur",
+        y="valeur",
+        color="commune",
+        barmode="group",
+        labels={"indicateur": "Indicateur", "valeur": "Valeur"},
+        title="Comparaison directe",
     )
+    bar_fig.update_layout(height=430, margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(bar_fig, use_container_width=True)
 
     radar = df[["commune", "prix_m2", "pct_passoires", "conso_energie_med"]].copy()
     for column in ["prix_m2", "pct_passoires", "conso_energie_med"]:
         max_value = radar[column].max()
         radar[column] = 0 if max_value == 0 else radar[column] / max_value
     radar = radar.melt(id_vars=["commune"], var_name="indicateur", value_name="score_normalise")
-    st.plotly_chart(
-        px.line_polar(
-            radar,
-            r="score_normalise",
-            theta="indicateur",
-            color="commune",
-            line_close=True,
-        ),
-        use_container_width=True,
+    radar_fig = px.line_polar(
+        radar,
+        r="score_normalise",
+        theta="indicateur",
+        color="commune",
+        line_close=True,
+        title="Profil normalise",
     )
+    radar_fig.update_layout(height=480, margin=dict(l=10, r=10, t=60, b=10))
+    st.plotly_chart(radar_fig, use_container_width=True)
