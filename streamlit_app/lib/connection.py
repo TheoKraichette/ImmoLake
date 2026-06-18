@@ -1,8 +1,4 @@
-"""Connexion DuckDB partagée vers le Data Lake MinIO (httpfs / S3).
-
-DuckDB interroge directement le Parquet (`gold/`, `ref/`) dans MinIO : pas de Postgres
-de serving. La connexion est mise en cache pour être réutilisée entre les reruns Streamlit.
-"""
+"""DuckDB connection helpers for MinIO-backed Parquet."""
 from __future__ import annotations
 
 import os
@@ -17,14 +13,13 @@ BUCKET = os.getenv("MINIO_BUCKET", "immolake")
 
 
 def _sql_literal(value: str) -> str:
-    """Échappe une valeur pour l'injecter dans une commande DDL DuckDB (CREATE SECRET)."""
     return "'" + value.replace("'", "''") + "'"
 
 
 @st.cache_resource
 def get_con() -> duckdb.DuckDBPyConnection:
-    """Connexion DuckDB configurée pour lire MinIO (partagée entre reruns / sessions)."""
-    con = duckdb.connect()
+    """Return a cached DuckDB connection configured for MinIO."""
+    con = duckdb.connect(database=":memory:")
     con.execute("INSTALL httpfs; LOAD httpfs;")
     con.execute(
         f"""
@@ -45,11 +40,13 @@ def get_con() -> duckdb.DuckDBPyConnection:
     return con
 
 
+def bucket() -> str:
+    return BUCKET
+
+
 def gold(name: str) -> str:
-    """Glob `s3://` vers une zone gold partitionnée, ex. `gold('fact_biens')`."""
     return f"s3://{BUCKET}/gold/{name}/**/*.parquet"
 
 
 def ref(name: str) -> str:
-    """Glob `s3://` vers le référentiel Parquet, ex. `ref('dim_commune')`."""
     return f"s3://{BUCKET}/ref/{name}/*.parquet"
