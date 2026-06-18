@@ -43,6 +43,6 @@ else:
             "style": {"backgroundColor": "white", "color": "black"},
         },
     )
-    st.pydeck_chart(deck, use_container_width=True)
+    st.pydeck_chart(deck, width="stretch")
 
 ui.note("Couleur au niveau commune : mediane DVF commune/type, pas geocodage au bien.")

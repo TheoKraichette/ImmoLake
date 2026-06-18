@@ -1,4 +1,4 @@
-"""Reusable sidebar filters for Streamlit pages."""
+"""Reusable filters for Streamlit pages."""
 from __future__ import annotations
 
 import streamlit as st
@@ -16,14 +16,17 @@ def render_sidebar_filters() -> Filters:
 
     options = queries.get_filter_options()
 
-    with st.sidebar:
-        st.header("Filtres")
-        with st.expander("Localisation", expanded=True):
+    with st.expander("Filtres", expanded=False):
+        location_col, asset_col, market_col = st.columns([1.05, 1.05, 0.9])
+
+        with location_col:
+            st.caption("Localisation")
             regions = st.multiselect("Region", options.regions)
             departements = st.multiselect("Departement", options.departements)
             communes = st.multiselect("Commune", options.communes)
 
-        with st.expander("Bien et energie", expanded=True):
+        with asset_col:
+            st.caption("Bien et energie")
             types_bien = st.multiselect("Type de bien", options.types_bien, default=options.types_bien[:2])
             etiquettes = st.multiselect("Etiquette DPE", options.etiquettes)
             passoires_only = st.checkbox("Passoires F-G", value=False)
@@ -35,7 +38,8 @@ def render_sidebar_filters() -> Filters:
                 step=5,
             )
 
-        with st.expander("Marche", expanded=True):
+        with market_col:
+            st.caption("Marche")
             prix_m2 = st.slider(
                 "Prix/m2",
                 min_value=options.prix_m2_min,

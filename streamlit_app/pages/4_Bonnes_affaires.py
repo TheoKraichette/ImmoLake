@@ -41,7 +41,9 @@ else:
         ]
     )
 
-    st.markdown(ui.opportunity_badges(best), unsafe_allow_html=True)
+    badges = ui.opportunity_badges(best)
+    if badges:
+        st.caption(badges)
 
     left, right = st.columns([1, 1])
     scatter_fig = px.scatter(
@@ -59,7 +61,7 @@ else:
         title="Sous-cotation et parc de passoires",
     )
     scatter_fig.update_layout(height=460, margin=dict(l=10, r=10, t=50, b=10))
-    left.plotly_chart(scatter_fig, use_container_width=True)
+    left.plotly_chart(scatter_fig, width="stretch")
 
     mapped = df.dropna(subset=["latitude", "longitude"])
     if mapped.empty:
@@ -82,7 +84,7 @@ else:
                     "style": {"backgroundColor": "white", "color": "black"},
                 },
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
     table = df[
@@ -100,7 +102,7 @@ else:
     ].copy()
     st.dataframe(
         table,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "prix_m2": st.column_config.NumberColumn("Prix/m2", format="%.0f EUR"),

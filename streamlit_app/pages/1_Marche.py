@@ -49,7 +49,7 @@ ranking_fig = px.bar(
     title="Communes les plus cheres",
 )
 ranking_fig.update_layout(height=460, margin=dict(l=10, r=10, t=50, b=10))
-left.plotly_chart(ranking_fig, use_container_width=True)
+left.plotly_chart(ranking_fig, width="stretch")
 
 scatter_fig = px.scatter(
     df,
@@ -62,11 +62,11 @@ scatter_fig = px.scatter(
     title="Prix et risque energetique",
 )
 scatter_fig.update_layout(height=460, margin=dict(l=10, r=10, t=50, b=10))
-right.plotly_chart(scatter_fig, use_container_width=True)
+right.plotly_chart(scatter_fig, width="stretch")
 
 st.dataframe(
     df[["commune", "departement", "type_bien", "prix_m2", "indice_sous_cotation", "pct_passoires", "nb_dpe"]],
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
     column_config={
         "prix_m2": st.column_config.NumberColumn("Prix/m2", format="%.0f EUR"),

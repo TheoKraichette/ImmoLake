@@ -48,7 +48,7 @@ dpe_fig = px.bar(
     title="Repartition des etiquettes DPE",
 )
 dpe_fig.update_layout(height=460, margin=dict(l=10, r=10, t=50, b=10))
-left.plotly_chart(dpe_fig, use_container_width=True)
+left.plotly_chart(dpe_fig, width="stretch")
 
 passoire_fig = px.bar(
     df.sort_values("pct_passoires", ascending=False),
@@ -59,6 +59,6 @@ passoire_fig = px.bar(
     title="Communes avec le plus de passoires",
 )
 passoire_fig.update_layout(height=460, margin=dict(l=10, r=10, t=50, b=10))
-right.plotly_chart(passoire_fig, use_container_width=True)
+right.plotly_chart(passoire_fig, width="stretch")
 
 ui.note("Loi Climat : logements G interdits en location en 2025, F en 2028, E en 2034.")
