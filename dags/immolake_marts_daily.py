@@ -1,21 +1,24 @@
-"""Construction quotidienne des marts analytiques (Parquet dans MinIO), en DuckDB.
+"""Construction des marts analytiques (Parquet dans MinIO), en DuckDB.
 
-Remplace `immolake_analytics_daily` (qui chargeait PostgreSQL) : plus aucun `PostgresHook`.
-DuckDB lit le gold + `ref/` et matérialise `mart_commune`, `mart_commune_type`,
-`mart_opportunites`. `detect_and_alert` lit les opportunités (alerte WhatsApp non activée — bonus).
+Plus aucun `PostgresHook` : DuckDB lit le gold + `ref/` et matérialise `mart_commune`,
+`mart_commune_type`, `mart_opportunites`. `detect_and_alert` lit les opportunités
+(alerte WhatsApp non activée — bonus).
+
+Chaînage event-driven : **planifié sur l'asset GOLD_FACT** (produit par le transform si le
+gate qualité passe) — donc un gold invalide ne déclenche jamais les marts ni l'alerte.
 """
 from __future__ import annotations
 
 import logging
 import os
 import sys
-from datetime import timedelta
 
 import pendulum
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.sdk import dag, get_current_context, task
 
 sys.path.insert(0, "/opt/airflow/include")
+from assets import GOLD_FACT, RETRY_ARGS  # noqa: E402
 from duckdb_lake import connect, run_sql  # noqa: E402
 
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "immolake")
@@ -24,8 +27,17 @@ OPP_SEUIL = os.getenv("OPPORTUNITE_SEUIL_NB_DPE", "30")
 LOGGER = logging.getLogger(__name__)
 
 
-def _ds(ds: str | None) -> str:
-    return ds or get_current_context()["ds"]
+def _ds(ds: str | None = None) -> str:
+    """Résout le `ds` métier : priorité au `ds` porté par l'asset GOLD_FACT, sinon le ds du run."""
+    if ds:
+        return ds
+    ctx = get_current_context()
+    for events in (ctx.get("triggering_asset_events") or {}).values():
+        for event in events:
+            extra = getattr(event, "extra", None) or {}
+            if extra.get("ds"):
+                return extra["ds"]
+    return ctx["ds"]
 
 
 def _s3(path: str) -> str:
@@ -40,11 +52,11 @@ def _purge(s3: S3Hook, prefix: str) -> None:
 
 @dag(
     dag_id="immolake_marts_daily",
-    schedule="@daily",
+    schedule=[GOLD_FACT],
     start_date=pendulum.datetime(2026, 1, 1, tz="Europe/Paris"),
     catchup=False,
     tags=["immolake", "marts", "duckdb"],
-    default_args={"retries": 1, "retry_delay": timedelta(minutes=2)},
+    default_args=RETRY_ARGS,
 )
 def immolake_marts_daily():
     @task

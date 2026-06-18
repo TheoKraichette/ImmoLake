@@ -3,11 +3,14 @@
 Ne charge jamais l'ensemble en mémoire : pagination en générateur (`iter_dpe`) + flush
 incrémental en Parquet partitionné (`dt=/dep=`). Permet de viser la France entière
 (~15M DPE) sans OOM. Le périmètre est piloté par `ADEME_DEPARTEMENTS` (liste blanche).
+
+Producteur de l'asset **RAW_DPE** : sa réussite déclenche `immolake_transform_daily`.
 """
 from __future__ import annotations
 
 import logging
 import os
+import sys
 from datetime import timedelta
 from io import BytesIO
 
@@ -18,15 +21,16 @@ from airflow.sdk import dag, get_current_context, task
 
 from hooks.ademe_api_hook import AdemeApiHook
 
+sys.path.insert(0, "/opt/airflow/include")
+from assets import RAW_DPE, RETRY_ARGS  # noqa: E402
+
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "immolake")
 RAW_PREFIX = "raw/dpe"
 LOGGER = logging.getLogger(__name__)
 
 
 def _ds(ds: str | None) -> str:
-    if ds:
-        return ds
-    return get_current_context()["ds"]
+    return ds or get_current_context()["ds"]
 
 
 def _optional_int_env(name: str) -> int | None:
@@ -51,11 +55,7 @@ def _to_parquet_bytes(rows: list[dict]) -> bytes:
     catchup=False,
     tags=["immolake", "ingestion"],
     max_active_tasks=int(os.getenv("ADEME_MAX_ACTIVE_TASKS", "4")),
-    default_args={
-        "retries": 2,
-        "retry_delay": timedelta(minutes=2),
-        "execution_timeout": timedelta(hours=2),
-    },
+    default_args={**RETRY_ARGS, "execution_timeout": timedelta(hours=2)},
 )
 def immolake_ingest_daily():
     @task
@@ -106,7 +106,19 @@ def immolake_ingest_daily():
         LOGGER.info("Ingestion dep=%s dt=%s : %s lignes, %s part(s)", dep, run_ds, total, part)
         return {"departement": dep, "rows": total, "parts": part, "dt": run_ds}
 
-    ingest_departement.expand(dep=list_departements())
+    @task(outlets=[RAW_DPE])
+    def mark_raw_ready(results: list[dict], ds: str | None = None) -> dict:
+        """Produit l'asset RAW_DPE (déclenche le transform) et y attache le `ds` métier."""
+        run_ds = _ds(ds)
+        get_current_context()["outlet_events"][RAW_DPE].extra = {"ds": run_ds}
+        total = sum((r or {}).get("rows", 0) for r in results)
+        LOGGER.info(
+            "raw/dpe pret pour dt=%s : %s lignes (%s departements) -> transform declenche",
+            run_ds, total, len(results),
+        )
+        return {"ds": run_ds, "rows": total}
+
+    mark_raw_ready(ingest_departement.expand(dep=list_departements()))
 
 
 immolake_ingest_daily()
