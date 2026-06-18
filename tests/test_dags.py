@@ -10,11 +10,12 @@ def test_no_import_errors(dagbag):
 
 
 def test_expected_dags_present(dagbag):
-    """Les 3 DAGs du pipeline sont chargés."""
+    """Les DAGs du pipeline v2 sont chargés (ingestion, transfos DuckDB, marts, seed ref)."""
     for dag_id in (
         "immolake_ingest_daily",
         "immolake_transform_daily",
-        "immolake_analytics_daily",
+        "immolake_marts_daily",
+        "immolake_seed_ref",
     ):
         assert dagbag.get_dag(dag_id) is not None
 
