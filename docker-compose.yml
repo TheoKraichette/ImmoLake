@@ -84,6 +84,7 @@ services:
       mc cp /seed-ref/dim_commune.parquet local/${MINIO_BUCKET:-immolake}/ref/dim_commune/dim_commune.parquet;
       mc cp /seed-ref/dim_dpe.parquet local/${MINIO_BUCKET:-immolake}/ref/dim_dpe/dim_dpe.parquet;
       mc cp /seed-ref/dim_type_bien.parquet local/${MINIO_BUCKET:-immolake}/ref/dim_type_bien/dim_type_bien.parquet;
+      if [ -f /seed-ref/geo_commune.parquet ]; then mc cp /seed-ref/geo_commune.parquet local/${MINIO_BUCKET:-immolake}/ref/geo_commune/geo_commune.parquet; fi;
       "
 
   # Migrations + création de l'utilisateur admin
