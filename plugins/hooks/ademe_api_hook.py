@@ -4,6 +4,8 @@ Endpoint : GET https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lin
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from airflow.sdk.bases.hook import BaseHook
 import requests
 from requests.adapters import HTTPAdapter
@@ -43,8 +45,15 @@ class AdemeApiHook(BaseHook):
         session.mount("https://", adapter)
         return session
 
-    def _build_qs(self, code_postal: str | None = None, code_insee: str | None = None) -> str | None:
+    def _build_qs(
+        self,
+        departement: str | None = None,
+        code_postal: str | None = None,
+        code_insee: str | None = None,
+    ) -> str | None:
         filters: list[str] = []
+        if departement:
+            filters.append(f'code_departement_ban:"{departement}"')
         if code_postal:
             filters.append(f'code_postal_ban:"{code_postal}"')
         if code_insee:
@@ -59,24 +68,28 @@ class AdemeApiHook(BaseHook):
         after = parse_qs(parsed.query).get("after")
         return after[0] if after else None
 
-    def get_dpe(
+    def iter_dpe(
         self,
+        *,
+        departement: str | None = None,
         code_postal: str | None = None,
         code_insee: str | None = None,
         size: int = DEFAULT_PAGE_SIZE,
         max_pages: int | None = None,
-    ) -> list[dict]:
-        """Return DPE rows from ADEME, following cursor pagination."""
+    ) -> Iterator[list[dict]]:
+        """Yield les pages DPE (≤`size` lignes) une à une, en suivant le curseur `after`.
+
+        Générateur : ne conserve jamais l'ensemble des résultats en mémoire (≠ `get_dpe`),
+        ce qui permet d'ingérer un département entier — puis la France — sans OOM.
+        """
         url = f"{self._base_url()}/lines"
         params: dict[str, int | str] = {"size": size}
-        qs = self._build_qs(code_postal=code_postal, code_insee=code_insee)
+        qs = self._build_qs(departement=departement, code_postal=code_postal, code_insee=code_insee)
         if qs:
             params["qs"] = qs
 
-        rows: list[dict] = []
         after: str | None = None
         page = 0
-
         with self._session() as session:
             while True:
                 page += 1
@@ -87,10 +100,24 @@ class AdemeApiHook(BaseHook):
                 response.raise_for_status()
                 payload = response.json()
                 page_rows = payload.get("results", [])
-                rows.extend(page_rows)
+                if page_rows:
+                    yield page_rows
 
                 after = self._next_after(payload)
                 if not after or not page_rows or (max_pages is not None and page >= max_pages):
                     break
 
+    def get_dpe(
+        self,
+        code_postal: str | None = None,
+        code_insee: str | None = None,
+        size: int = DEFAULT_PAGE_SIZE,
+        max_pages: int | None = None,
+    ) -> list[dict]:
+        """Agrège toutes les pages en mémoire (compat). Préférer `iter_dpe` sur gros volumes."""
+        rows: list[dict] = []
+        for page_rows in self.iter_dpe(
+            code_postal=code_postal, code_insee=code_insee, size=size, max_pages=max_pages
+        ):
+            rows.extend(page_rows)
         return rows
