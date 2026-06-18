@@ -1,8 +1,10 @@
-"""Transformation quotidienne en DuckDB : raw -> silver -> gold (Parquet dans MinIO).
+"""Transformation en DuckDB : raw -> silver -> gold (Parquet dans MinIO).
 
 Tout en SQL DuckDB streaming (mémoire bornée) : remplace les helpers pandas qui calaient
-au-delà de ~200k logements/ville. Les requêtes vivent dans `include/sql/`. Plus aucun Postgres :
-les dimensions sont jointes depuis `ref/*.parquet`.
+au-delà de ~200k logements/ville. Les requêtes vivent dans `include/sql/`. Plus aucun Postgres.
+
+Chaînage event-driven : **planifié sur l'asset RAW_DPE** (déclenché par l'ingestion),
+**produit l'asset GOLD_FACT** (déclenche les marts) — mais seulement si le gate qualité passe.
 """
 from __future__ import annotations
 
@@ -18,16 +20,27 @@ from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.sdk import dag, get_current_context, task
 
 sys.path.insert(0, "/opt/airflow/include")
+from assets import GOLD_FACT, RAW_DPE, RETRY_ARGS  # noqa: E402
 from duckdb_lake import connect, run_sql  # noqa: E402
 
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "immolake")
 REF_DIM_COMMUNE = "ref/dim_commune/*.parquet"
 REF_DIM_DPE = "ref/dim_dpe/*.parquet"
+VALID_DPE = "('A','B','C','D','E','F','G')"
 LOGGER = logging.getLogger(__name__)
 
 
-def _ds(ds: str | None) -> str:
-    return ds or get_current_context()["ds"]
+def _ds(ds: str | None = None) -> str:
+    """Résout le `ds` métier : priorité au `ds` porté par l'asset amont (extra), sinon le ds du run."""
+    if ds:
+        return ds
+    ctx = get_current_context()
+    for events in (ctx.get("triggering_asset_events") or {}).values():
+        for event in events:
+            extra = getattr(event, "extra", None) or {}
+            if extra.get("ds"):
+                return extra["ds"]
+    return ctx["ds"]
 
 
 def _s3(path: str) -> str:
@@ -43,11 +56,11 @@ def _purge(s3: S3Hook, prefix: str) -> None:
 
 @dag(
     dag_id="immolake_transform_daily",
-    schedule="@daily",
+    schedule=[RAW_DPE],
     start_date=pendulum.datetime(2026, 1, 1, tz="Europe/Paris"),
     catchup=False,
     tags=["immolake", "transform", "duckdb"],
-    default_args={"retries": 1, "retry_delay": timedelta(minutes=2), "execution_timeout": timedelta(hours=2)},
+    default_args={**RETRY_ARGS, "execution_timeout": timedelta(hours=2)},
 )
 def immolake_transform_daily():
     @task
@@ -116,6 +129,41 @@ def immolake_transform_daily():
         LOGGER.info("gold/fact_biens dt=%s : %s lignes", run_ds, n)
         return n
 
+    @task.short_circuit
+    def data_quality_gate(ds: str | None = None) -> bool:
+        """Gate qualité sur le gold (DuckDB) : un gold invalide court-circuite kpi + marts."""
+        run_ds = _ds(ds)
+        fact = _s3(f"gold/fact_biens/dt={run_ds}/data.parquet")
+        con = connect()
+        try:
+            total, n_null, n_bad_dpe, n_future = con.execute(
+                f"""
+                SELECT count(*),
+                       count(*) FILTER (WHERE code_insee IS NULL),
+                       count(*) FILTER (WHERE etiquette NOT IN {VALID_DPE}),
+                       count(*) FILTER (WHERE dt > current_date)
+                FROM read_parquet('{fact}')
+                """
+            ).fetchone()
+        finally:
+            con.close()
+
+        failures = []
+        if total == 0:
+            failures.append("not_empty")
+        if n_null:
+            failures.append(f"code_insee_null={n_null}")
+        if n_bad_dpe:
+            failures.append(f"bad_dpe={n_bad_dpe}")
+        if n_future:
+            failures.append(f"future_date={n_future}")
+
+        if failures:
+            LOGGER.warning("Data quality KO %s -> court-circuit (kpi + marts non declenches)", failures)
+            return False
+        LOGGER.info("Data quality OK : %s lignes valides", total)
+        return True
+
     @task
     def build_kpi_commune(ds: str | None = None) -> str:
         run_ds = _ds(ds)
@@ -133,11 +181,19 @@ def immolake_transform_daily():
         con.close()
         return out
 
+    @task(outlets=[GOLD_FACT])
+    def mark_gold_ready(ds: str | None = None) -> dict:
+        """Produit l'asset GOLD_FACT (déclenche les marts) avec le `ds` métier."""
+        run_ds = _ds(ds)
+        get_current_context()["outlet_events"][GOLD_FACT].extra = {"ds": run_ds}
+        LOGGER.info("gold pret pour dt=%s -> marts declenches", run_ds)
+        return {"ds": run_ds}
+
     dpe_silver = raw_to_silver_dpe()
     dvf_silver = raw_to_silver_dvf()
     dvf_to_raw() >> dvf_silver
     fact = build_fact_biens()
-    [dpe_silver, dvf_silver] >> fact >> build_kpi_commune()
+    [dpe_silver, dvf_silver] >> fact >> data_quality_gate() >> build_kpi_commune() >> mark_gold_ready()
 
 
 immolake_transform_daily()
