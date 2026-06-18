@@ -4,6 +4,7 @@ Endpoint : GET https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lin
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 
 from airflow.sdk.bases.hook import BaseHook
@@ -14,7 +15,8 @@ from urllib.parse import parse_qs, urlparse
 
 DATASET = "dpe03existant"
 DEFAULT_PAGE_SIZE = 1000
-DEFAULT_TIMEOUT = 30
+DEFAULT_TIMEOUT = 60
+PAGE_RETRIES = 5  # pagination profonde ADEME : retente une page sur timeout/erreur réseau transitoire
 
 
 class AdemeApiHook(BaseHook):
@@ -96,9 +98,17 @@ class AdemeApiHook(BaseHook):
                 if after:
                     params["after"] = after
 
-                response = session.get(url, params=params, timeout=self.timeout)
-                response.raise_for_status()
-                payload = response.json()
+                payload = None
+                for attempt in range(PAGE_RETRIES):
+                    try:
+                        response = session.get(url, params=params, timeout=self.timeout)
+                        response.raise_for_status()
+                        payload = response.json()
+                        break
+                    except (requests.ConnectionError, requests.Timeout):
+                        if attempt == PAGE_RETRIES - 1:
+                            raise
+                        time.sleep(min(2 ** attempt, 15))
                 page_rows = payload.get("results", [])
                 if page_rows:
                     yield page_rows
