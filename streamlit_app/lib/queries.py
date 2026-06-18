@@ -1,7 +1,7 @@
 """DuckDB-backed data access for the Streamlit front."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pandas as pd
 
@@ -203,11 +203,32 @@ def get_filter_options() -> FilterOptions:
 
 @st.cache_data(ttl=300)
 def get_dpe_distribution(filters: Filters) -> pd.DataFrame:
-    df = get_market_data(filters)
-    grouped = df.groupby(["commune", "etiquette"], dropna=True).agg(nb=("nb_dpe", "sum")).reset_index()
-    if grouped.empty:
+    # Répartition A→G réelle : le market data agrégé n'a pas d'étiquette (NULL), donc le
+    # groupby précédent renvoyait toujours vide. On lit le grain fact_biens (joint à ref pour
+    # filtrer/nommer). Le filtre type_bien est ignoré ('tous' côté market n'existe pas au grain bien).
+    grain = replace(
+        filters,
+        types_bien=(),
+        prix_m2_min=None,
+        prix_m2_max=None,
+        surface_min=None,
+        surface_max=None,
+        nb_dpe_min=0,
+    )
+    where = build_where(grain, alias="m")
+    sql = f"""
+        SELECT commune, etiquette, count(*) AS nb FROM (
+            SELECT c.nom AS commune, c.departement, c.region, f.type_bien, f.etiquette
+            FROM read_parquet('{gold('fact_biens')}') f
+            JOIN read_parquet('{ref('dim_commune')}') c USING (code_insee)
+        ) m {where.sql}
+        GROUP BY commune, etiquette
+        ORDER BY commune, etiquette
+    """
+    df = _run_query(sql, where.params)
+    if df.empty:
         return pd.DataFrame(columns=["commune", "etiquette", "nb"])
-    return grouped
+    return df
 
 
 @st.cache_data(ttl=300)
