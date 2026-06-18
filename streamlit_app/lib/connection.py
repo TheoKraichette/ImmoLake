@@ -4,7 +4,8 @@ from __future__ import annotations
 import os
 
 import duckdb
-import streamlit as st
+
+from lib.st_compat import st
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
 MINIO_KEY = os.getenv("MINIO_ROOT_USER", "minio_admin")

@@ -4,11 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pandas as pd
-import streamlit as st
 
 from lib.connection import gold, ref, get_con
 from lib.filter_state import Filters
 from lib.filters_sql import build_where
+from lib.st_compat import st
 
 
 @dataclass(frozen=True)
@@ -136,6 +136,36 @@ def _mart_sql() -> str:
     """
 
 
+def _opportunities_sql() -> str:
+    return f"""
+    SELECT
+        coalesce(o.nom, o.code_insee) AS commune,
+        o.code_insee,
+        o.departement,
+        o.region,
+        o.type_bien,
+        NULL AS etiquette,
+        o.prix_m2_median AS prix_m2,
+        NULL::DOUBLE AS surface,
+        o.nb_dpe,
+        o.pct_passoires,
+        NULL::DOUBLE AS conso_energie_med,
+        o.ecart_pct AS indice_sous_cotation,
+        o.z,
+        round(
+            (0.6 * greatest(-coalesce(o.z, 0), 0) * 50)
+            + (0.4 * coalesce(o.pct_passoires, 0)),
+            1
+        ) AS score_opportunite,
+        g.latitude,
+        g.longitude,
+        g.geometry_json,
+        o.est_opportunite
+    FROM read_parquet('{gold('mart_opportunites')}') o
+    LEFT JOIN read_parquet('{ref('geo_commune')}') g USING (code_insee)
+    """
+
+
 @st.cache_data(ttl=300)
 def get_market_data(filters: Filters | None = None) -> pd.DataFrame:
     filters = filters or Filters()
@@ -182,10 +212,17 @@ def get_dpe_distribution(filters: Filters) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def get_opportunities(filters: Filters) -> pd.DataFrame:
-    df = get_market_data(filters).copy()
+    where = build_where(filters, alias="m")
+    sql = f"SELECT * FROM ({_opportunities_sql()}) m {where.sql} ORDER BY score_opportunite DESC"
+    df = _run_query(sql, where.params)
+    if df.empty:
+        df = get_market_data(filters).copy()
     df = df[(df["z"].fillna(0) <= -filters.opportunite_k) | (df["indice_sous_cotation"].fillna(0) < 0)]
     if df.empty:
         return df
+    df["score_opportunite"] = pd.to_numeric(df["score_opportunite"], errors="coerce").fillna(
+        (0.6 * df["z"].fillna(0).mul(-1).clip(lower=0) * 50) + (0.4 * df["pct_passoires"].fillna(0))
+    ).round(1)
     df["etiquette_opportunite"] = df.apply(
         lambda row: "sous-cotee + parc passoires"
         if row["pct_passoires"] >= 20
@@ -193,3 +230,11 @@ def get_opportunities(filters: Filters) -> pd.DataFrame:
         axis=1,
     )
     return df.sort_values(["score_opportunite", "indice_sous_cotation"], ascending=[False, True])
+
+
+@st.cache_data(ttl=300)
+def get_comparison_data(communes: tuple[str, ...], filters: Filters | None = None) -> pd.DataFrame:
+    df = get_market_data(filters or Filters(nb_dpe_min=1))
+    if communes:
+        df = df[df["commune"].isin(communes)]
+    return df.sort_values("commune")
