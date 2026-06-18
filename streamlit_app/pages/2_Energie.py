@@ -9,8 +9,6 @@ from lib import ui
 
 
 ui.configure_page("Energie")
-ui.hero("Energie", "Suivre la distribution DPE et le poids des passoires thermiques.", ["DPE", "passoires", "conso"])
-
 filters = render_sidebar_filters()
 df = queries.get_market_data(filters)
 dpe = queries.get_dpe_distribution(filters)
@@ -18,6 +16,17 @@ dpe = queries.get_dpe_distribution(filters)
 if df.empty:
     ui.empty_state("Aucune donnee energie avec les filtres courants.")
     st.stop()
+
+ui.hero(
+    "Energie",
+    "Identifier les zones ou la performance energetique devient un risque de marche.",
+    [
+        ("Passoires", ui.format_pct(df["pct_passoires"].mean())),
+        ("Conso mediane", f"{df['conso_energie_med'].median():.0f}"),
+        ("Communes", ui.format_int(df["commune"].nunique())),
+        ("DPE", ui.format_int(df["nb_dpe"].sum())),
+    ],
+)
 
 ui.metric_row(
     [

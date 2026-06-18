@@ -9,14 +9,23 @@ from lib import ui
 
 
 ui.configure_page("Marche")
-ui.hero("Marche", "Comparer les niveaux de prix, volumes et sous-cotation par commune.", ["prix/m2", "volume", "rang"])
-
 filters = render_sidebar_filters()
 df = queries.get_market_data(filters)
 
 if df.empty:
     ui.empty_state("Aucune commune avec les filtres courants.")
     st.stop()
+
+ui.hero(
+    "Marche",
+    "Comparer les prix, le volume observe et la sous-cotation territoriale.",
+    [
+        ("Communes", ui.format_int(df["commune"].nunique())),
+        ("Prix median", ui.format_eur_m2(df["prix_m2"].median())),
+        ("DPE", ui.format_int(df["nb_dpe"].sum())),
+        ("Sous-cotation", ui.format_pct(df["indice_sous_cotation"].mean())),
+    ],
+)
 
 ui.metric_row(
     [

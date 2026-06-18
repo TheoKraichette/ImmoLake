@@ -1,6 +1,7 @@
 """Shared presentation helpers for the Streamlit front."""
 from __future__ import annotations
 
+import html
 import pandas as pd
 
 from lib.st_compat import st
@@ -18,105 +19,330 @@ def apply_theme() -> None:
         """
         <style>
         :root {
-            --immo-ink: #17202a;
-            --immo-muted: #5f6b7a;
-            --immo-line: #d7dde5;
-            --immo-blue: #2f6f9f;
-            --immo-teal: #1f8a70;
-            --immo-red: #c84c4c;
-            --immo-amber: #b8871f;
-            --immo-soft: #f6f8fb;
+            --ink: #12140f;
+            --panel: #171b15;
+            --panel-2: #20261d;
+            --paper: #f7f3e8;
+            --muted: #9fa894;
+            --line: rgba(247, 243, 232, 0.14);
+            --teal: #2dd4bf;
+            --green: #84cc16;
+            --amber: #f6b44b;
+            --red: #ef625b;
+            --steel: #8fb1c6;
+        }
+        .stApp {
+            background:
+                linear-gradient(180deg, #10120e 0%, #171b15 42%, #f1ecdf 42%, #f7f3e8 100%);
+            color: var(--paper);
         }
         .block-container {
-            padding-top: 1.25rem;
-            padding-bottom: 2rem;
-            max-width: 1320px;
+            max-width: 1380px;
+            padding-top: 1.1rem;
+            padding-bottom: 2.5rem;
         }
-        h1, h2, h3 {
-            color: var(--immo-ink);
+        h1, h2, h3, h4 {
             letter-spacing: 0;
         }
+        div[data-testid="stSidebar"] {
+            background: #10120e;
+            border-right: 1px solid var(--line);
+        }
+        div[data-testid="stSidebar"] * {
+            color: #f7f3e8;
+        }
+        div[data-testid="stSidebar"] [data-baseweb="select"] * {
+            color: #12140f;
+        }
         [data-testid="stMetric"] {
-            background: #ffffff;
-            border: 1px solid var(--immo-line);
+            background: rgba(247, 243, 232, 0.94);
+            border: 1px solid rgba(18, 20, 15, 0.1);
             border-radius: 8px;
-            padding: 0.85rem 1rem;
-            min-height: 104px;
+            padding: 0.95rem 1rem;
+            min-height: 108px;
+            box-shadow: 0 14px 32px rgba(18, 20, 15, 0.08);
         }
         [data-testid="stMetricLabel"] {
-            color: var(--immo-muted);
+            color: #596052;
         }
         [data-testid="stMetricValue"] {
-            color: var(--immo-ink);
+            color: #12140f;
             font-size: 1.55rem;
         }
         div[data-testid="stDataFrame"] {
-            border: 1px solid var(--immo-line);
+            border: 1px solid rgba(18, 20, 15, 0.12);
             border-radius: 8px;
             overflow: hidden;
+            box-shadow: 0 16px 34px rgba(18, 20, 15, 0.07);
         }
-        .immo-hero {
-            background: linear-gradient(90deg, #eef5f8 0%, #f7f9f5 55%, #fff8ed 100%);
-            border: 1px solid var(--immo-line);
+        .wow-hero {
+            position: relative;
+            min-height: 365px;
+            overflow: hidden;
+            border: 1px solid var(--line);
             border-radius: 8px;
-            padding: 1rem 1.15rem;
+            padding: 2rem;
             margin-bottom: 1rem;
+            background:
+                radial-gradient(circle at 82% 32%, rgba(45, 212, 191, 0.16), transparent 28%),
+                linear-gradient(120deg, #12140f 0%, #1c241a 42%, #263022 100%);
+            box-shadow: 0 30px 80px rgba(0, 0, 0, 0.26);
         }
-        .immo-hero p {
-            color: var(--immo-muted);
-            margin: 0.25rem 0 0 0;
+        .wow-hero::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(247, 243, 232, 0.055) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(247, 243, 232, 0.055) 1px, transparent 1px);
+            background-size: 34px 34px;
+            mask-image: linear-gradient(90deg, transparent 0%, #000 42%, #000 100%);
         }
-        .immo-badge-row {
+        .wow-copy {
+            position: relative;
+            z-index: 2;
+            max-width: 610px;
+        }
+        .wow-kicker {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.28rem 0.65rem;
+            border: 1px solid rgba(45, 212, 191, 0.38);
+            border-radius: 999px;
+            color: #a7f3d0;
+            background: rgba(45, 212, 191, 0.08);
+            font-size: 0.82rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .wow-hero h1 {
+            margin: 0.75rem 0 0.45rem 0;
+            color: #fffaf0;
+            font-size: clamp(2.4rem, 5vw, 5rem);
+            line-height: 0.95;
+            font-weight: 800;
+        }
+        .wow-hero p {
+            color: rgba(247, 243, 232, 0.78);
+            font-size: 1.08rem;
+            max-width: 560px;
+            margin-bottom: 1.15rem;
+        }
+        .wow-scene {
+            position: absolute;
+            right: 1.5rem;
+            bottom: 1.2rem;
+            width: min(520px, 44vw);
+            height: 285px;
+            z-index: 1;
+        }
+        .wow-map {
+            position: absolute;
+            inset: 10px 10px 58px 22px;
+            transform: perspective(640px) rotateX(58deg) rotateZ(-12deg);
+            border: 1px solid rgba(247, 243, 232, 0.16);
+            background:
+                linear-gradient(90deg, rgba(45, 212, 191, 0.35), transparent 1px),
+                linear-gradient(rgba(246, 180, 75, 0.22), transparent 1px);
+            background-size: 38px 38px;
+            box-shadow: 0 0 48px rgba(45, 212, 191, 0.15);
+        }
+        .wow-line {
+            position: absolute;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--teal), var(--amber), transparent);
+            transform-origin: left center;
+            opacity: 0.85;
+        }
+        .wow-l1 { width: 230px; right: 165px; top: 86px; transform: rotate(-21deg); }
+        .wow-l2 { width: 290px; right: 70px; top: 150px; transform: rotate(9deg); }
+        .wow-l3 { width: 180px; right: 220px; top: 198px; transform: rotate(27deg); }
+        .wow-dot {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--amber);
+            box-shadow: 0 0 20px rgba(246, 180, 75, 0.8);
+        }
+        .wow-d1 { right: 390px; top: 70px; }
+        .wow-d2 { right: 140px; top: 140px; background: var(--teal); box-shadow: 0 0 20px rgba(45, 212, 191, 0.8); }
+        .wow-d3 { right: 260px; top: 210px; background: var(--red); box-shadow: 0 0 20px rgba(239, 98, 91, 0.75); }
+        .wow-buildings {
+            position: absolute;
+            right: 38px;
+            bottom: 0;
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+        }
+        .wow-building {
+            width: 28px;
+            background: linear-gradient(180deg, rgba(247, 243, 232, 0.92), rgba(143, 177, 198, 0.52));
+            border: 1px solid rgba(247, 243, 232, 0.22);
+            box-shadow: inset 0 0 18px rgba(18, 20, 15, 0.25);
+        }
+        .wow-metrics {
+            position: relative;
+            z-index: 2;
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.75rem;
+            max-width: 900px;
+        }
+        .wow-mini {
+            border: 1px solid rgba(247, 243, 232, 0.14);
+            background: rgba(247, 243, 232, 0.08);
+            border-radius: 8px;
+            padding: 0.75rem;
+            backdrop-filter: blur(10px);
+        }
+        .wow-mini span {
+            display: block;
+            color: rgba(247, 243, 232, 0.6);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .wow-mini strong {
+            color: #fffaf0;
+            font-size: 1.32rem;
+        }
+        .signal-grid {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        .signal-card {
+            grid-column: span 3;
+            background: #fffaf0;
+            color: #12140f;
+            border: 1px solid rgba(18, 20, 15, 0.1);
+            border-radius: 8px;
+            padding: 1rem;
+            box-shadow: 0 16px 35px rgba(18, 20, 15, 0.08);
+        }
+        .signal-card.wide { grid-column: span 6; }
+        .signal-card.dark {
+            background: #171b15;
+            color: #fffaf0;
+            border-color: rgba(247, 243, 232, 0.14);
+        }
+        .signal-label {
+            color: #707766;
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 0.35rem;
+        }
+        .signal-card.dark .signal-label { color: rgba(247, 243, 232, 0.58); }
+        .signal-value {
+            font-size: 1.65rem;
+            line-height: 1.1;
+            font-weight: 780;
+        }
+        .signal-caption {
+            margin-top: 0.45rem;
+            color: #656d5f;
+            font-size: 0.92rem;
+        }
+        .signal-card.dark .signal-caption { color: rgba(247, 243, 232, 0.68); }
+        .section-title {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            color: #12140f;
+            margin: 1.35rem 0 0.6rem;
+        }
+        .section-title h2 {
+            color: #12140f;
+            margin: 0;
+            font-size: 1.55rem;
+        }
+        .section-title span {
+            color: #656d5f;
+            font-size: 0.92rem;
+        }
+        .top-list {
+            display: grid;
+            gap: 0.6rem;
+        }
+        .top-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 0.75rem;
+            align-items: center;
+            border: 1px solid rgba(18, 20, 15, 0.1);
+            background: rgba(255, 250, 240, 0.88);
+            color: #12140f;
+            border-radius: 8px;
+            padding: 0.78rem 0.85rem;
+        }
+        .top-row strong { display: block; }
+        .top-row small { color: #626b5b; }
+        .score-chip {
+            min-width: 74px;
+            text-align: center;
+            padding: 0.35rem 0.55rem;
+            border-radius: 999px;
+            background: #171b15;
+            color: #fffaf0;
+            font-weight: 750;
+        }
+        .badge-row {
             display: flex;
             gap: 0.45rem;
             flex-wrap: wrap;
             margin: 0.15rem 0 0.8rem 0;
         }
-        .immo-badge {
-            border: 1px solid var(--immo-line);
+        .badge {
+            border: 1px solid rgba(18, 20, 15, 0.12);
             border-radius: 999px;
-            padding: 0.18rem 0.55rem;
+            padding: 0.2rem 0.58rem;
             font-size: 0.82rem;
-            background: #ffffff;
-            color: var(--immo-ink);
+            background: #fffaf0;
+            color: #12140f;
         }
-        .immo-badge.passoire {
-            border-color: #e4aaa6;
-            color: #8f2d2d;
-            background: #fff3f1;
+        .badge.passoire {
+            border-color: rgba(239, 98, 91, 0.34);
+            color: #9f2e29;
+            background: #fff0ed;
         }
-        .immo-badge.good {
-            border-color: #9fcfbd;
-            color: #1f6f5c;
-            background: #effaf5;
+        .badge.good {
+            border-color: rgba(45, 212, 191, 0.34);
+            color: #0d7167;
+            background: #eafcf8;
         }
-        .immo-note {
-            border-left: 4px solid var(--immo-amber);
-            background: #fff9ea;
-            padding: 0.7rem 0.85rem;
+        .note {
+            border-left: 4px solid var(--amber);
+            background: #fff5d8;
+            padding: 0.75rem 0.9rem;
             border-radius: 6px;
-            color: #5c4a17;
+            color: #4f3f18;
             margin: 0.7rem 0 1rem 0;
         }
-        .immo-legend {
+        .legend {
             display: flex;
             align-items: center;
-            gap: 0.6rem;
+            gap: 0.65rem;
             margin: 0.25rem 0 0.8rem 0;
-            color: var(--immo-muted);
-            font-size: 0.86rem;
+            color: #626b5b;
+            font-size: 0.9rem;
         }
-        .immo-ramp {
-            width: 180px;
-            height: 10px;
+        .ramp {
+            width: 210px;
+            height: 11px;
             border-radius: 999px;
-            border: 1px solid var(--immo-line);
+            border: 1px solid rgba(18, 20, 15, 0.12);
         }
-        .immo-ramp.prix {
-            background: linear-gradient(90deg, #4575b4, #f46d43);
-        }
-        .immo-ramp.passoires {
-            background: linear-gradient(90deg, #2b83ba, #d73027);
+        .ramp.prix { background: linear-gradient(90deg, #2dd4bf, #f6b44b, #ef625b); }
+        .ramp.passoires { background: linear-gradient(90deg, #8fb1c6, #f6b44b, #ef625b); }
+        @media (max-width: 900px) {
+            .wow-scene { opacity: 0.35; width: 86vw; }
+            .wow-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .signal-card, .signal-card.wide { grid-column: span 12; }
         }
         </style>
         """,
@@ -124,26 +350,110 @@ def apply_theme() -> None:
     )
 
 
-def hero(title: str, subtitle: str, badges: list[str] | None = None) -> None:
-    badge_html = ""
-    if badges:
-        badge_html = "<div class='immo-badge-row'>" + "".join(
-            f"<span class='immo-badge'>{badge}</span>" for badge in badges
+def _escape(value: object) -> str:
+    return html.escape(str(value))
+
+
+def hero(title: str, subtitle: str, metrics: list[tuple[str, str]] | None = None) -> None:
+    metric_html = ""
+    if metrics:
+        metric_html = "<div class='wow-metrics'>" + "".join(
+            f"<div class='wow-mini'><span>{_escape(label)}</span><strong>{_escape(value)}</strong></div>"
+            for label, value in metrics
         ) + "</div>"
     st.markdown(
         f"""
-        <div class="immo-hero">
-            <h1>{title}</h1>
-            <p>{subtitle}</p>
-            {badge_html}
+        <section class="wow-hero">
+            <div class="wow-copy">
+                <div class="wow-kicker">Lakehouse command center</div>
+                <h1>{_escape(title)}</h1>
+                <p>{_escape(subtitle)}</p>
+                {metric_html}
+            </div>
+            <div class="wow-scene" aria-hidden="true">
+                <div class="wow-map"></div>
+                <div class="wow-line wow-l1"></div>
+                <div class="wow-line wow-l2"></div>
+                <div class="wow-line wow-l3"></div>
+                <div class="wow-dot wow-d1"></div>
+                <div class="wow-dot wow-d2"></div>
+                <div class="wow-dot wow-d3"></div>
+                <div class="wow-buildings">
+                    <div class="wow-building" style="height:84px"></div>
+                    <div class="wow-building" style="height:132px"></div>
+                    <div class="wow-building" style="height:104px"></div>
+                    <div class="wow-building" style="height:168px"></div>
+                    <div class="wow-building" style="height:118px"></div>
+                    <div class="wow-building" style="height:146px"></div>
+                </div>
+            </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def page_header(title: str, subtitle: str) -> None:
+    st.markdown(
+        f"""
+        <div class="section-title">
+            <div>
+                <h2>{_escape(title)}</h2>
+                <span>{_escape(subtitle)}</span>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
+def signal_grid(items: list[tuple[str, str, str, str]]) -> None:
+    cards = []
+    for label, value, caption, tone in items:
+        classes = "signal-card dark" if tone == "dark" else "signal-card"
+        cards.append(
+            f"""
+            <div class="{classes}">
+                <div class="signal-label">{_escape(label)}</div>
+                <div class="signal-value">{_escape(value)}</div>
+                <div class="signal-caption">{_escape(caption)}</div>
+            </div>
+            """
+        )
+    st.markdown("<div class='signal-grid'>" + "".join(cards) + "</div>", unsafe_allow_html=True)
+
+
+def leaderboard(df: pd.DataFrame, *, score_col: str = "score_opportunite", limit: int = 5) -> None:
+    if df.empty:
+        empty_state("Aucune opportunite avec les filtres courants.")
+        return
+    rows = []
+    for row in df.head(limit).itertuples(index=False):
+        row_dict = row._asdict()
+        rows.append(
+            f"""
+            <div class="top-row">
+                <div>
+                    <strong>{_escape(row_dict.get("commune", "-"))}</strong>
+                    <small>{_escape(row_dict.get("departement", "-"))} · {_escape(row_dict.get("type_bien", "tous"))}
+                    · {format_eur_m2(row_dict.get("prix_m2"))} · {format_pct(row_dict.get("pct_passoires"))} passoires</small>
+                </div>
+                <div class="score-chip">{_escape(format_number(row_dict.get(score_col), 1))}</div>
+            </div>
+            """
+        )
+    st.markdown("<div class='top-list'>" + "".join(rows) + "</div>", unsafe_allow_html=True)
+
+
 def note(text: str) -> None:
-    st.markdown(f"<div class='immo-note'>{text}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='note'>{_escape(text)}</div>", unsafe_allow_html=True)
+
+
+def format_number(value: object, digits: int = 0) -> str:
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(numeric):
+        return "-"
+    return f"{float(numeric):,.{digits}f}".replace(",", " ")
 
 
 def format_int(value: object) -> str:
@@ -189,9 +499,9 @@ def map_legend(metric: str) -> None:
         ramp = "prix"
     st.markdown(
         f"""
-        <div class="immo-legend">
-            <span>{label}</span>
-            <span class="immo-ramp {ramp}"></span>
+        <div class="legend">
+            <span>{_escape(label)}</span>
+            <span class="ramp {ramp}"></span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -201,7 +511,7 @@ def map_legend(metric: str) -> None:
 def opportunity_badges(row: pd.Series) -> str:
     badges = []
     if pd.to_numeric(pd.Series([row.get("indice_sous_cotation")]), errors="coerce").iloc[0] < 0:
-        badges.append("<span class='immo-badge good'>sous-cotee</span>")
+        badges.append("<span class='badge good'>sous-cotee</span>")
     if pd.to_numeric(pd.Series([row.get("pct_passoires")]), errors="coerce").iloc[0] >= 20:
-        badges.append("<span class='immo-badge passoire'>parc passoires</span>")
-    return "<div class='immo-badge-row'>" + "".join(badges) + "</div>" if badges else ""
+        badges.append("<span class='badge passoire'>parc passoires</span>")
+    return "<div class='badge-row'>" + "".join(badges) + "</div>" if badges else ""

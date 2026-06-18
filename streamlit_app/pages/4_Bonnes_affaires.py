@@ -11,14 +11,19 @@ from lib import ui
 
 
 ui.configure_page("Bonnes affaires")
-ui.hero(
-    "Bonnes affaires",
-    "Identifier les communes sous-cotees avec un potentiel de renovation energetique.",
-    ["sous-cotation", "passoires", "score"],
-)
-
 filters = render_sidebar_filters()
 df = queries.get_opportunities(filters)
+
+ui.hero(
+    "Bonnes affaires",
+    "Prioriser les communes sous-cotees ou le parc energetique cree un angle de renovation.",
+    [
+        ("Opportunites", ui.format_int(len(df))),
+        ("Meilleur score", ui.format_number(df["score_opportunite"].max(), 1) if not df.empty else "-"),
+        ("Ecart min", ui.format_pct(df["indice_sous_cotation"].min()) if not df.empty else "-"),
+        ("Passoires", ui.format_pct(df["pct_passoires"].mean()) if not df.empty else "-"),
+    ],
+)
 
 ui.note("Sous-cotation = commune vs departement, PAS bien vs marche local ; enrichissement prix = mediane DVF.")
 
