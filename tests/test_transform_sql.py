@@ -48,15 +48,15 @@ def test_gold_fact_biens_enriches_price_and_keeps_known_communes(tmp_path):
     pd.DataFrame(
         [
             {"code_insee": "33063", "etiquette_dpe": "C", "type_batiment": "appartement",
-             "surface_habitable": 50.0, "conso_energie": 150.0},
+             "surface_habitable": 50.0, "conso_energie": 150.0, "date_etablissement": "2026-01-01"},
             {"code_insee": "99999", "etiquette_dpe": "C", "type_batiment": "appartement",  # commune inconnue
-             "surface_habitable": 40.0, "conso_energie": 120.0},
+             "surface_habitable": 40.0, "conso_energie": 120.0, "date_etablissement": "2026-01-01"},
         ]
     ).to_parquet(tmp_path / "silver_dpe.parquet")
     pd.DataFrame(
-        [
-            {"code_insee": "33063", "type_bien": "appartement", "prix_m2": 4000.0},
-            {"code_insee": "33063", "type_bien": "appartement", "prix_m2": 5000.0},
+        [  # surfaces dans la tranche 40-70 (comme le DPE) -> médiane de tranche = médiane commune
+            {"code_insee": "33063", "type_bien": "appartement", "prix_m2": 4000.0, "surface": 50.0},
+            {"code_insee": "33063", "type_bien": "appartement", "prix_m2": 5000.0, "surface": 55.0},
         ]
     ).to_parquet(tmp_path / "silver_dvf.parquet")
     pd.DataFrame([{"code_insee": "33063", "nom": "Bordeaux"}]).to_parquet(tmp_path / "dim_commune.parquet")
@@ -77,6 +77,8 @@ def test_gold_fact_biens_enriches_price_and_keeps_known_communes(tmp_path):
     assert len(fact) == 1                        # commune 99999 écartée (absente du référentiel)
     row = fact.iloc[0]
     assert row["code_insee"] == "33063"
-    assert row["prix_m2"] == 4500.0              # médiane DVF (4000, 5000)
+    assert row["prix_m2"] == 4500.0              # médiane DVF de la tranche 40-70 (4000, 5000)
     assert row["prix"] == 50.0 * 4500.0          # surface * prix/m²
     assert row["type_bien"] == "appartement"     # libellé conservé (pas d'id SERIAL)
+    assert row["tranche_surface"] == "40-70"     # maille surface (v2-11)
+    assert "date_etablissement" in fact.columns  # axe temporel des tendances (v2-11)
