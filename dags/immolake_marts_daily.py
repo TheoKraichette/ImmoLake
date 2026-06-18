@@ -67,7 +67,8 @@ def immolake_marts_daily():
         dim_commune = _s3("ref/dim_commune/*.parquet")
         dim_dpe = _s3("ref/dim_dpe/*.parquet")
         mart_ct = _s3("gold/mart_commune_type/data.parquet")
-        for name in ("mart_commune", "mart_commune_type", "mart_opportunites"):
+        silver_dvf = _s3(f"silver/dvf/dt={run_ds}/data.parquet")
+        for name in ("mart_commune", "mart_commune_type", "mart_opportunites", "dvf_stats_commune_type"):
             _purge(s3, f"gold/{name}/")
 
         con = connect()
@@ -77,6 +78,8 @@ def immolake_marts_daily():
                 out=mart_ct)
         run_sql(con, "mart_opportunites.sql", mart_commune_type=mart_ct, k=OPP_K, seuil=OPP_SEUIL,
                 out=_s3("gold/mart_opportunites/data.parquet"))
+        run_sql(con, "gold_dvf_stats.sql", silver_dvf=silver_dvf, dim_commune=dim_commune,
+                out=_s3("gold/dvf_stats_commune_type/data.parquet"))
         con.close()
         return {"dt": run_ds}
 
