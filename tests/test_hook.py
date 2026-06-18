@@ -75,3 +75,35 @@ def test_get_dpe_follows_cursor_pagination(mock_conn):
     assert "after" not in session.calls[0]["params"]
     assert session.calls[1]["params"]["after"] == "cursor-2"
     assert session.calls[0]["params"]["qs"] == 'code_insee_ban:"75056"'
+
+
+@patch.object(AdemeApiHook, "get_connection")
+def test_iter_dpe_yields_pages_lazily(mock_conn):
+    """Le générateur rend une page à la fois (pas d'accumulation globale en mémoire)."""
+    conn = MagicMock(host="data.ademe.fr")
+    conn.extra_dejson = {"schema": "https"}
+    mock_conn.return_value = conn
+
+    base = "https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines"
+    session = FakeSession(
+        [
+            fake_response({"results": [{"numero_dpe": "A"}], "next": f"{base}?after=c2"}),
+            fake_response({"results": [{"numero_dpe": "B"}], "next": f"{base}?after=c3"}),
+            fake_response({"results": [{"numero_dpe": "C"}]}),
+        ]
+    )
+    hook = AdemeApiHook()
+    hook._session = MagicMock(return_value=session)
+
+    pages = hook.iter_dpe(departement="33", size=1)
+    first = next(pages)
+
+    # Filtre par département + paresse : une seule page récupérée à ce stade.
+    assert first == [{"numero_dpe": "A"}]
+    assert session.calls[0]["params"]["qs"] == 'code_departement_ban:"33"'
+    assert len(session.calls) == 1
+
+    rest = list(pages)
+    assert [page[0]["numero_dpe"] for page in rest] == ["B", "C"]
+    assert len(session.calls) == 3
+    assert session.calls[1]["params"]["after"] == "c2"
