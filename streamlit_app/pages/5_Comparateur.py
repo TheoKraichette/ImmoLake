@@ -9,14 +9,23 @@ from lib import ui
 
 
 ui.configure_page("Comparateur")
-ui.hero("Comparateur", "Comparer 2 a 4 communes sur les indicateurs marche et energie.", ["prix", "energie", "volume"])
-
 filters = render_sidebar_filters()
 available = queries.get_market_data(filters)
 choices = sorted(available["commune"].dropna().unique().tolist())
 default = choices[: min(2, len(choices))]
 selected = st.multiselect("Communes", choices, default=default, max_selections=4)
 df = queries.get_comparison_data(tuple(selected), filters)
+
+ui.hero(
+    "Comparateur",
+    "Mettre plusieurs communes face a face pour arbitrer prix, energie et profondeur de marche.",
+    [
+        ("Selection", ui.format_int(len(selected))),
+        ("Prix median", ui.format_eur_m2(df["prix_m2"].median()) if not df.empty else "-"),
+        ("Passoires", ui.format_pct(df["pct_passoires"].mean()) if not df.empty else "-"),
+        ("DPE", ui.format_int(df["nb_dpe"].sum()) if not df.empty else "-"),
+    ],
+)
 
 if len(selected) < 2:
     ui.empty_state("Selectionner 2 a 4 communes.")
@@ -32,7 +41,7 @@ else:
 
     st.dataframe(
         df[["commune", "prix_m2", "pct_passoires", "conso_energie_med", "indice_sous_cotation", "nb_dpe"]],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "prix_m2": st.column_config.NumberColumn("Prix/m2", format="%.0f EUR"),
@@ -55,7 +64,7 @@ else:
         title="Comparaison directe",
     )
     bar_fig.update_layout(height=430, margin=dict(l=10, r=10, t=50, b=10))
-    st.plotly_chart(bar_fig, use_container_width=True)
+    st.plotly_chart(bar_fig, width="stretch")
 
     radar = df[["commune", "prix_m2", "pct_passoires", "conso_energie_med"]].copy()
     for column in ["prix_m2", "pct_passoires", "conso_energie_med"]:
@@ -71,4 +80,4 @@ else:
         title="Profil normalise",
     )
     radar_fig.update_layout(height=480, margin=dict(l=10, r=10, t=60, b=10))
-    st.plotly_chart(radar_fig, use_container_width=True)
+    st.plotly_chart(radar_fig, width="stretch")

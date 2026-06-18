@@ -11,14 +11,19 @@ from lib import ui
 
 
 ui.configure_page("Bonnes affaires")
-ui.hero(
-    "Bonnes affaires",
-    "Identifier les communes sous-cotees avec un potentiel de renovation energetique.",
-    ["sous-cotation", "passoires", "score"],
-)
-
 filters = render_sidebar_filters()
 df = queries.get_opportunities(filters)
+
+ui.hero(
+    "Bonnes affaires",
+    "Prioriser les communes sous-cotees ou le parc energetique cree un angle de renovation.",
+    [
+        ("Opportunites", ui.format_int(len(df))),
+        ("Meilleur score", ui.format_number(df["score_opportunite"].max(), 1) if not df.empty else "-"),
+        ("Ecart min", ui.format_pct(df["indice_sous_cotation"].min()) if not df.empty else "-"),
+        ("Passoires", ui.format_pct(df["pct_passoires"].mean()) if not df.empty else "-"),
+    ],
+)
 
 ui.note("Sous-cotation = commune vs departement, PAS bien vs marche local ; enrichissement prix = mediane DVF.")
 
@@ -36,7 +41,9 @@ else:
         ]
     )
 
-    st.markdown(ui.opportunity_badges(best), unsafe_allow_html=True)
+    badges = ui.opportunity_badges(best)
+    if badges:
+        st.caption(badges)
 
     left, right = st.columns([1, 1])
     scatter_fig = px.scatter(
@@ -54,7 +61,7 @@ else:
         title="Sous-cotation et parc de passoires",
     )
     scatter_fig.update_layout(height=460, margin=dict(l=10, r=10, t=50, b=10))
-    left.plotly_chart(scatter_fig, use_container_width=True)
+    left.plotly_chart(scatter_fig, width="stretch")
 
     mapped = df.dropna(subset=["latitude", "longitude"])
     if mapped.empty:
@@ -77,7 +84,7 @@ else:
                     "style": {"backgroundColor": "white", "color": "black"},
                 },
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
     table = df[
@@ -95,7 +102,7 @@ else:
     ].copy()
     st.dataframe(
         table,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "prix_m2": st.column_config.NumberColumn("Prix/m2", format="%.0f EUR"),

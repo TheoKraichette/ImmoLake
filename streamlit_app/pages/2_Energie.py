@@ -9,8 +9,6 @@ from lib import ui
 
 
 ui.configure_page("Energie")
-ui.hero("Energie", "Suivre la distribution DPE et le poids des passoires thermiques.", ["DPE", "passoires", "conso"])
-
 filters = render_sidebar_filters()
 df = queries.get_market_data(filters)
 dpe = queries.get_dpe_distribution(filters)
@@ -18,6 +16,17 @@ dpe = queries.get_dpe_distribution(filters)
 if df.empty:
     ui.empty_state("Aucune donnee energie avec les filtres courants.")
     st.stop()
+
+ui.hero(
+    "Energie",
+    "Identifier les zones ou la performance energetique devient un risque de marche.",
+    [
+        ("Passoires", ui.format_pct(df["pct_passoires"].mean())),
+        ("Conso mediane", f"{df['conso_energie_med'].median():.0f}"),
+        ("Communes", ui.format_int(df["commune"].nunique())),
+        ("DPE", ui.format_int(df["nb_dpe"].sum())),
+    ],
+)
 
 ui.metric_row(
     [
@@ -39,7 +48,7 @@ dpe_fig = px.bar(
     title="Repartition des etiquettes DPE",
 )
 dpe_fig.update_layout(height=460, margin=dict(l=10, r=10, t=50, b=10))
-left.plotly_chart(dpe_fig, use_container_width=True)
+left.plotly_chart(dpe_fig, width="stretch")
 
 passoire_fig = px.bar(
     df.sort_values("pct_passoires", ascending=False),
@@ -50,6 +59,6 @@ passoire_fig = px.bar(
     title="Communes avec le plus de passoires",
 )
 passoire_fig.update_layout(height=460, margin=dict(l=10, r=10, t=50, b=10))
-right.plotly_chart(passoire_fig, use_container_width=True)
+right.plotly_chart(passoire_fig, width="stretch")
 
 ui.note("Loi Climat : logements G interdits en location en 2025, F en 2028, E en 2034.")

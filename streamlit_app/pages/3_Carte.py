@@ -10,23 +10,24 @@ from lib import ui
 
 
 ui.configure_page("Carte")
-ui.hero("Carte", "Visualiser le prix et les passoires au niveau commune.", ["carte", "prix/m2", "passoires"])
-
 filters = render_sidebar_filters()
 metric = st.segmented_control("Couche", ["prix_m2", "pct_passoires"], default="prix_m2", label_visibility="collapsed")
 df = queries.get_map_data(filters).dropna(subset=["latitude", "longitude"])
+ui.hero(
+    "Carte",
+    "Lire le territoire comme une heatmap : prix, energie, volume et sous-cotation.",
+    [
+        ("Communes", ui.format_int(len(df))),
+        ("Prix median", ui.format_eur_m2(df["prix_m2"].median()) if not df.empty else "-"),
+        ("Passoires", ui.format_pct(df["pct_passoires"].mean()) if not df.empty else "-"),
+        ("Couche", metric),
+    ],
+)
 ui.map_legend(metric)
 
 if df.empty:
     ui.empty_state("Aucune commune geolocalisee avec les filtres courants.")
 else:
-    ui.metric_row(
-        [
-            ("Communes carte", ui.format_int(len(df)), None),
-            ("Prix/m2 median", ui.format_eur_m2(df["prix_m2"].median()), None),
-            ("Passoires", ui.format_pct(df["pct_passoires"].mean()), None),
-        ]
-    )
     deck = pdk.Deck(
         map_style=None,
         initial_view_state=initial_view_state(df),
@@ -42,6 +43,6 @@ else:
             "style": {"backgroundColor": "white", "color": "black"},
         },
     )
-    st.pydeck_chart(deck, use_container_width=True)
+    st.pydeck_chart(deck, width="stretch")
 
 ui.note("Couleur au niveau commune : mediane DVF commune/type, pas geocodage au bien.")
