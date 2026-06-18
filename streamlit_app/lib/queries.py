@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pandas as pd
 import streamlit as st
 
-from lib.connection import bucket, get_con
+from lib.connection import gold, ref, get_con
 from lib.filter_state import Filters
 from lib.filters_sql import build_where
 
@@ -112,27 +112,27 @@ def _run_query(sql: str, params: tuple = ()) -> pd.DataFrame:
 
 
 def _mart_sql() -> str:
-    lake = bucket()
     return f"""
     SELECT
-        coalesce(c.nom, k.code_insee) AS commune,
-        k.code_insee,
-        c.departement,
-        c.region,
+        coalesce(m.nom, m.code_insee) AS commune,
+        m.code_insee,
+        m.departement,
+        m.region,
         'tous' AS type_bien,
         NULL AS etiquette,
-        k.prix_m2_median AS prix_m2,
+        m.prix_m2_median AS prix_m2,
         NULL::DOUBLE AS surface,
-        k.nb_transactions AS nb_dpe,
-        k.pct_passoires,
-        NULL::DOUBLE AS conso_energie_med,
-        k.decote_passoire_pct AS indice_sous_cotation,
-        NULL::DOUBLE AS z,
+        m.nb_dpe,
+        m.pct_passoires,
+        m.conso_energie_moy AS conso_energie_med,
+        m.indice_sous_cotation,
+        m.z_prix_dpt AS z,
         NULL::DOUBLE AS score_opportunite,
-        NULL::DOUBLE AS latitude,
-        NULL::DOUBLE AS longitude
-    FROM read_parquet('s3://{lake}/gold/kpi_commune/**/*.parquet') k
-    LEFT JOIN read_parquet('s3://{lake}/ref/dim_commune/**/*.parquet') c USING (code_insee)
+        g.latitude,
+        g.longitude,
+        g.geometry_json
+    FROM read_parquet('{gold('mart_commune')}') m
+    LEFT JOIN read_parquet('{ref('geo_commune')}') g USING (code_insee)
     """
 
 
@@ -145,6 +145,14 @@ def get_market_data(filters: Filters | None = None) -> pd.DataFrame:
     if df.empty:
         df = _demo_frame()
     return df
+
+
+@st.cache_data(ttl=300)
+def get_map_data(filters: Filters | None = None) -> pd.DataFrame:
+    df = get_market_data(filters)
+    if "geometry_json" not in df.columns:
+        df["geometry_json"] = None
+    return df.dropna(subset=["latitude", "longitude"])
 
 
 @st.cache_data(ttl=300)

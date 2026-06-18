@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pendulum
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
@@ -17,6 +18,7 @@ sys.path.insert(0, "/opt/airflow/include")
 from seed_ref import build_dimensions, to_parquet_bytes  # noqa: E402
 
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "immolake")
+GEO_REF = Path("/opt/airflow/include/ref/geo_commune.parquet")
 
 
 @dag(
@@ -39,6 +41,14 @@ def immolake_seed_ref():
                 replace=True,
             )
             counts[name] = len(df)
+        if GEO_REF.exists():
+            s3.load_file(
+                filename=str(GEO_REF),
+                key="ref/geo_commune/geo_commune.parquet",
+                bucket_name=MINIO_BUCKET,
+                replace=True,
+            )
+            counts["geo_commune"] = 1
         return counts
 
     seed()
