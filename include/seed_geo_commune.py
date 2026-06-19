@@ -31,17 +31,48 @@ FALLBACK_CENTRES: dict[str, tuple[str, float, float]] = {
     "75102": ("Paris 2e Arrondissement", 48.8686, 2.3418),
 }
 
+# Départements couverts par défaut (grandes métropoles) — alignés sur `ADEME_DEPARTEMENTS` (.env).
+DEFAULT_DEPARTEMENTS = ["75", "69", "13", "33", "31", "06", "44", "67", "34", "59", "35", "38"]
 
-def _fetch_commune(code_insee: str, timeout: float = 10.0) -> dict[str, Any] | None:
+# Arrondissements municipaux (Paris 75101-75120, Lyon 69381-69389, Marseille 13201-13216) :
+# les DPE/DVF utilisent ces codes, pas le code commune unique. L'endpoint /departements n'inclut
+# pas toujours les arrondissements -> on les récupère explicitement par code.
+ARRONDISSEMENTS = (
+    [f"751{n:02d}" for n in range(1, 21)]
+    + [f"6938{n}" for n in range(1, 10)]
+    + [f"132{n:02d}" for n in range(1, 17)]
+)
+
+
+def _fields(with_contour: bool) -> str:
+    # Le contour (polygone) est lourd : sur un large périmètre (national), on s'en passe et la carte
+    # rend des points colorés. On le garde pour un petit périmètre (choroplèthe urbain).
+    return "nom,centre,contour" if with_contour else "nom,centre"
+
+
+def _fetch_commune(code_insee: str, timeout: float = 10.0, with_contour: bool = True) -> dict[str, Any] | None:
     response = requests.get(
         f"https://geo.api.gouv.fr/communes/{code_insee}",
-        params={"fields": "nom,centre,contour"},
+        params={"fields": _fields(with_contour)},
         timeout=timeout,
     )
     if response.status_code == 404:
         return None
     response.raise_for_status()
     return response.json()
+
+
+def _fetch_departement_communes(
+    departement: str, timeout: float = 30.0, with_contour: bool = True
+) -> list[dict[str, Any]]:
+    """Toutes les communes d'un département (centroïde + éventuellement contour) en un appel."""
+    response = requests.get(
+        f"https://geo.api.gouv.fr/departements/{departement}/communes",
+        params={"fields": _fields(with_contour)},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return response.json() or []
 
 
 def _row_from_payload(code_insee: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -73,7 +104,18 @@ def _fallback_row(code_insee: str) -> dict[str, Any] | None:
     }
 
 
+def _clean_geo_df(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    df = pd.DataFrame(rows, columns=["code_insee", "nom", "latitude", "longitude", "geometry_json", "source"])
+    if df.empty:
+        return df
+    df["code_insee"] = df["code_insee"].astype("string").str.strip()
+    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+    df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
+    return df.dropna(subset=["code_insee", "latitude", "longitude"]).drop_duplicates("code_insee")
+
+
 def build_geo_commune(codes: list[str], *, fetch_remote: bool = True) -> pd.DataFrame:
+    """Géo par liste de codes commune (un appel API par code)."""
     rows: list[dict[str, Any]] = []
     for code_insee in codes:
         payload = None
@@ -85,24 +127,62 @@ def build_geo_commune(codes: list[str], *, fetch_remote: bool = True) -> pd.Data
         row = _row_from_payload(code_insee, payload) if payload else _fallback_row(code_insee)
         if row is not None:
             rows.append(row)
+    return _clean_geo_df(rows)
 
-    df = pd.DataFrame(rows, columns=["code_insee", "nom", "latitude", "longitude", "geometry_json", "source"])
-    if df.empty:
-        return df
-    df["code_insee"] = df["code_insee"].astype("string").str.strip()
-    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
-    df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
-    return df.dropna(subset=["code_insee", "latitude", "longitude"]).drop_duplicates("code_insee")
+
+def build_geo_departements(
+    departements: list[str], *, arrondissements: list[str] = ARRONDISSEMENTS,
+    fetch_remote: bool = True, with_contour: bool = True,
+) -> pd.DataFrame:
+    """Géo de toutes les communes des départements + arrondissements municipaux (carte multi-villes)."""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if fetch_remote:
+        for departement in departements:
+            try:
+                items = _fetch_departement_communes(departement, with_contour=with_contour)
+            except requests.RequestException:
+                items = []
+            for item in items:
+                code = (item.get("code") or "").strip()
+                if code and code not in seen:
+                    rows.append(_row_from_payload(code, item))
+                    seen.add(code)
+    # Arrondissements (par code : l'endpoint /departements ne les liste pas), fallback hors-ligne.
+    for code in arrondissements:
+        if code in seen:
+            continue
+        payload = None
+        if fetch_remote:
+            try:
+                payload = _fetch_commune(code, with_contour=with_contour)
+            except requests.RequestException:
+                payload = None
+        row = _row_from_payload(code, payload) if payload else _fallback_row(code)
+        if row is not None:
+            rows.append(row)
+            seen.add(code)
+    return _clean_geo_df(rows)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--codes", nargs="*", default=sorted(FALLBACK_CENTRES))
+    parser.add_argument("--departements", nargs="*", default=DEFAULT_DEPARTEMENTS,
+                        help="Départements à couvrir (toutes leurs communes + arrondissements).")
+    parser.add_argument("--codes", nargs="*", default=None,
+                        help="Override : liste explicite de codes commune (ignore --departements).")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--no-contour", action="store_true",
+                        help="N'embarque pas les contours (fichier léger ; carte en points). Recommandé en national.")
     args = parser.parse_args()
 
     REF_DIR.mkdir(exist_ok=True)
-    df = build_geo_commune(args.codes, fetch_remote=not args.offline)
+    if args.codes:
+        df = build_geo_commune(args.codes, fetch_remote=not args.offline)
+    else:
+        df = build_geo_departements(
+            args.departements, fetch_remote=not args.offline, with_contour=not args.no_contour
+        )
     df.to_parquet(GEO_PARQUET, engine="pyarrow", index=False)
     print(f"geo_commune: {len(df)} lignes -> {GEO_PARQUET.relative_to(INCLUDE_DIR.parent)}")
 

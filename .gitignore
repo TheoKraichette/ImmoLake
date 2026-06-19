@@ -1,6 +1,9 @@
 # Secrets
 .env
 
+# Override compose local (run d'ingestion ad hoc, non partagé)
+docker-compose.override.yml
+
 # Airflow
 logs/
 *.pid
