@@ -1,134 +1,109 @@
 # Architecture — ImmoLake
 
-## Vue d'ensemble
+## Vue d'ensemble (v2)
 
-ImmoLake suit le pattern **Data Lakehouse** : un lac (MinIO) pour le brut rejouable,
-un entrepôt structuré (PostgreSQL) pour le modèle propre, orchestré par Airflow et
-exposé par Metabase.
+ImmoLake suit le pattern **Data Lakehouse** : **MinIO** porte tout le médaillon en **Parquet**
+(brut rejouable → modèle propre), **DuckDB** exécute les transformations et sert les requêtes
+analytiques directement sur ce Parquet (via `httpfs`/S3), **Airflow 3** orchestre (chaînage
+**event-driven** par Assets), et un front **Streamlit** expose les dashboards.
 
 ```
- Sources              Orchestration       Data Lake (MinIO)                     Serving                 BI
- ┌──────────┐         ┌──────────┐        ┌────────────────────────────┐        ┌──────────────────┐    ┌──────────┐
- │ API ADEME│────────►│ Airflow  │───────►│ raw/dpe                    │        │ dwh.fact_biens   │───►│ Metabase │
- │ DPE      │         │          │        │ silver/dpe                 │        │ analytics.kpi_*  │    │          │
- └──────────┘         │          │        │                            │        └──────────────────┘    └──────────┘
- ┌──────────┐         │          │        │ raw/dvf                    │                 ▲
- │ CSV DVF  │────────►│          │───────►│ silver/dvf                 │                 │
- └──────────┘         └──────────┘        │ gold/fact_biens            │─────────────────┘
-                                          │ gold/kpi_commune           │
-                                          └────────────────────────────┘
+ Sources                 Orchestration        Data Lake (MinIO, Parquet) + DuckDB            Front
+ ┌──────────┐            ┌──────────┐         ┌───────────────────────────────────┐         ┌───────────┐
+ │ API ADEME│───────────►│ Airflow 3│────────►│ raw/dpe  raw/dvf                   │         │ Streamlit │
+ │ DPE      │            │ (Assets) │         │ silver/dpe  silver/dvf            │◄────────│ (DuckDB)  │
+ └──────────┘            │          │         │ gold/fact_biens  gold/kpi_commune │         │ 5 pages   │
+ ┌──────────┐            │          │         │ gold/mart_* (commune, type,       │         └───────────┘
+ │ geo-dvf  │───────────►│          │────────►│   opportunites, dvf_stats)        │
+ │ par dep  │            └──────────┘         │ ref/* (dimensions + geo_commune)  │
+ └──────────┘                                 └───────────────────────────────────┘
 ```
 
-## Flux d'un run quotidien
+## Flux d'un run (event-driven)
 
-1. **Bronze DPE** : le Hook appelle l'API ADEME → JSON brut déposé dans `raw/dpe/dt=`.
-2. **Bronze DVF** : Airflow télécharge le CSV `DVF_CSV_URL` → `raw/dvf/dt=`.
-3. **Silver** : nettoyage / typage avec pandas/pyarrow → `silver/dpe/dt=` et `silver/dvf/dt=`.
-4. **Gold facts** : construction de `gold/fact_biens/dt=` avec rattachement dimensions et enrichissement prix DVF.
-5. **Gold KPIs** : agrégation de `fact_biens` → `gold/kpi_commune/dt=`.
-6. **Serving** : chargement idempotent du gold → `dwh.fact_biens` et `analytics.kpi_commune_mensuel`
-   (`DELETE + INSERT` par `dt`). *(Bonus prévu, non activé : alerte WhatsApp via Twilio.)*
+1. **`immolake_ingest_daily`** — le Hook `AdemeApiHook` pagine l'API ADEME **par département**
+   (générateur, mémoire bornée) en ne demandant que les **colonnes pertinentes** (`select`) →
+   `raw/dpe/dt=/dep=*`. Produit l'asset **`RAW_DPE`**.
+2. **`immolake_transform_daily`** (déclenché par `RAW_DPE`) — télécharge le **DVF par département**
+   (`raw/dvf/dt=/dep=*`), puis DuckDB en SQL : `silver/dpe`, `silver/dvf`, `gold/fact_biens`
+   (enrichissement prix), `gold/kpi_commune`. Un **data quality gate** court-circuite la suite si
+   le gold est invalide. Produit l'asset **`GOLD_FACT`**.
+3. **`immolake_marts_daily`** (déclenché par `GOLD_FACT`) — DuckDB matérialise `mart_commune`,
+   `mart_commune_type`, `mart_opportunites` (détecteur médiane − k·σ) et `dvf_stats_commune_type`
+   (percentiles). `detect_and_alert` logge les opportunités (alerte WhatsApp prévue, non activée).
 
-## Couches de stockage
+`immolake_seed_ref` (manuel) régénère les dimensions `ref/` (committées en Parquet, chargées au
+boot par `minio-init`) + pousse `geo_commune`.
 
-**Lac (MinIO, Parquet) — médaillon :**
+## Couches de stockage (MinIO, Parquet)
 
 | Zone | Rôle |
 |---|---|
-| `raw/dpe` | JSON brut ADEME, rejouable |
-| `raw/dvf` | CSV DVF brut téléchargé |
-| `silver/dpe` | DPE nettoyés, typés, dédupliqués |
-| `silver/dvf` | transactions/prix DVF nettoyés |
-| `gold/fact_biens` | table de faits Parquet enrichie prix/DPE |
+| `raw/dpe/dt=/dep=*` | DPE bruts ADEME (colonnes sélectionnées), par département |
+| `raw/dvf/dt=/dep=*` | CSV DVF bruts (geo-dvf), par département |
+| `silver/dpe`, `silver/dvf` | nettoyés, typés, dédupliqués (DuckDB) |
+| `gold/fact_biens` | faits enrichis prix/DPE/GES/coût/émissions/année |
 | `gold/kpi_commune` | indicateurs métier par commune |
+| `gold/mart_*` | marts servis au front (commune, type, opportunités, percentiles DVF) |
+| `ref/*` | dimensions (`dim_commune`, `dim_dpe`, `dim_type_bien`) + `geo_commune` (carte) |
 
-**Serving (PostgreSQL) :**
-
-| Schéma | Rôle |
-|---|---|
-| `dwh` | modèle en étoile (dimensions + faits), intégrité FK |
-| `analytics` | agrégats pré-calculés pour Metabase |
-
-## Choix de modélisation MVP
+## Choix de modélisation
 
 ### Enrichissement prix DVF
+Pas de matching adresse/parcelle (clés fines indisponibles en MVP). `gold/fact_biens` joint un
+**prix/m² médian DVF par `code_insee × type_bien × tranche de surface`** (fallback `code_insee ×
+type_bien`), puis `prix = surface × prix_m2`. La vraie **dispersion** (percentiles p10..p90) vit
+dans `gold/dvf_stats_commune_type`, calculée sur les transactions DVF brutes.
 
-Le matching exact DPE ↔ transaction DVF nécessite des clés fines (adresse normalisée,
-parcelle, géolocalisation fiable). Pour rester robuste en MVP, ImmoLake enrichit les biens
-avec un **prix/m² médian DVF par `code_insee + type_bien`** :
-
-1. `silver/dvf` calcule `prix_m2 = prix / surface` quand la colonne n'existe pas.
-2. `gold/fact_biens` joint ce référentiel agrégé sur `code_insee` et `type_bien`.
-3. `prix = surface * prix_m2` est recalculé dans le gold.
-
-Cette approche est explicable, rejouable et suffisante pour produire des KPI prix par commune.
-Elle pourra évoluer vers un matching adresse/parcelle si les données sont disponibles.
-
-### KPI communaux
-
-`gold/kpi_commune` agrège `gold/fact_biens` par commune :
-
-- `prix_m2_median` : médiane des prix/m² enrichis ;
-- `pct_passoires` : part de DPE F/G ;
-- `decote_passoire_pct` : écart moyen prix/m² F/G vs non-passoires ;
-- `nb_transactions` : nombre de biens dans le fait.
+### Colonnes pertinentes
+silver/gold ne portent que les champs utiles aux cas d'usage : étiquettes DPE **et GES**, conso,
+**émissions**, **coût énergie annuel**, **énergie de chauffage**, **année de construction** — plus
+les agrégats commune correspondants dans `mart_commune` (% passoires DPE & GES, coût médian, etc.).
 
 ---
 
-## ADR-001 — Pourquoi PostgreSQL comme Data Warehouse ?
+## ADR-005 — DuckDB sur le Parquet du lac (retrait de PostgreSQL) · *v2, remplace ADR-001 & ADR-004*
 
-**Statut :** accepté · **Contexte :** projet de week-end, volumes modérés, sujet imposant Postgres.
+**Statut :** accepté (v2).
+La v1 calait : transformations **pandas tout en mémoire** (~200 k logements/ville max) + un serving
+**PostgreSQL** à charger. La v2 exécute tout en **DuckDB SQL streaming** lisant/écrivant le Parquet
+MinIO via `httpfs` (`memory_limit` + spill disque) → tient des volumes 10–100× supérieurs sans OOM,
+et **supprime Postgres** : le gold/marts Parquet EST le serving, interrogé directement par DuckDB.
+Conséquences : transformations en SQL versionné (`include/sql/*.sql`), plus de provider Postgres,
+idempotence par purge+réécriture de partition (au lieu de `DELETE/INSERT` transactionnel).
 
-PostgreSQL est une base **OLTP** détournée en rôle de DWH. Ce n'est pas un entrepôt
-colonnaire (BigQuery, Snowflake, ClickHouse), et c'est volontaire :
+## ADR-006 — Front Streamlit (remplace Metabase) · *v2, remplace ADR-003*
 
-- **Volume adapté** : quelques millions de lignes filtrées par commune → Postgres + index
-  répond en millisecondes. Un DWH colonnaire serait du sur-engineering.
-- **Conforme au sujet** : les TP imposent PostgreSQL pour le modèle `dwh`/`analytics`.
-- **Kimball en relationnel** : PK/FK et jointures dim↔fait sont le terrain naturel de Postgres
-  (un moteur colonnaire gère mal les FK).
-- **Idempotence transactionnelle** : le pattern `BEGIN; DELETE; INSERT; COMMIT;` repose sur
-  l'ACID de Postgres.
-- **Gratuit, local, Dockerisable** : reproductible pour la soutenance, sans compte cloud.
+**Statut :** accepté (v2).
+Metabase imposait Postgres + un provisioning par script. Le front **Streamlit** interroge le
+Parquet via DuckDB (même moteur que les transforms), permet un produit sur-mesure (détecteur de
+bonnes affaires, carte choroplèthe, comparateur) et supprime un service + une base.
 
-> Le rôle « lakehouse » est porté par **MinIO + Postgres ensemble** : MinIO garde le brut
-> rejouable, Postgres porte le modèle propre.
+## ADR-007 — `select` des colonnes à l'ingestion ADEME
 
-**Évolution possible (si gros volumes)** : interroger directement le gold Parquet via
-**DuckDB** (écarté ici pour rester simple), ou migrer le serving vers **ClickHouse**.
+**Statut :** accepté.
+Le dataset `dpe03existant` compte ~230 colonnes ; les cas d'usage en exploitent ~14. Le Hook passe
+désormais `select=…` à l'API data-fair : pages réseau et Parquet `raw` **fortement allégés**, ce qui
+réduit le coût d'ingestion et permet de **couvrir plus de départements/villes** à budget égal. La
+liste est canonique (les `silver_*` lisent exactement ces champs) et inclut le signal métier capté
+en plus (GES, coût énergie, énergie de chauffage, émissions, année de construction).
+
+## ADR-008 — Couverture DVF dérivée des départements DPE
+
+**Statut :** accepté.
+L'ingestion DPE est multi-département ; le DVF l'était resté en mono-fichier (`DVF_CSV_URL`) → prix
+NULL hors de ce périmètre. La v2 **dérive les fichiers DVF** (`geo-dvf` par département) de la liste
+`ADEME_DEPARTEMENTS` (+ `DVF_YEAR`), écrits sous `raw/dvf/dt=/dep=*` et lus en glob → **couverture
+prix alignée sur les DPE**. `DVF_CSV_URL` subsiste en override mono-fichier. Les départements sans
+DVF (**Alsace-Moselle 67/68/57**, régime du livre foncier) renvoient 404 et sont **ignorés** (DPE
+conservés, sans prix) plutôt que de faire échouer le run.
 
 ---
 
-## ADR-002 — Pourquoi Airflow en LocalExecutor ?
+## ADR (v1 — historique, révisés en v2)
 
-Le sujet de référence (Marketplace) utilise CeleryExecutor (Redis + workers). Pour ImmoLake
-on choisit **LocalExecutor** : les tâches s'exécutent dans le scheduler, ce qui **supprime
-Redis et les workers Celery**. Moins de conteneurs, démarrage plus rapide, suffisant pour
-un pipeline `@daily` à faible parallélisme. Le passage à Celery reste trivial si besoin.
-
-## ADR-003 — Pourquoi Metabase plutôt que Superset ?
-
-Metabase : installation Docker triviale, auto-détection des relations du modèle en étoile,
-suffisant pour 2–4 dashboards. Superset est plus puissant mais plus complexe à configurer
-— hors budget pour un week-end.
-
-## ADR-004 — Médaillon matérialisé dans MinIO (Parquet), sans DuckDB
-
-Les couches **silver** et **gold** sont des fichiers **Parquet** dans MinIO (pas seulement des
-schémas Postgres). Les transformations raw→silver→gold se font en **Python (pandas/pyarrow)**
-dans Airflow. PostgreSQL ne porte que le **serving** (dwh + analytics), chargé depuis le gold,
-pour que Metabase interroge du SQL.
-
-DuckDB n'est **pas** utilisé : pour le volume du projet, charger le gold dans Postgres suffit
-et évite une techno de plus. Conséquences : pas de schéma `staging` dans Postgres (le silver
-vit dans le lac) et les transformations ne sont plus écrites en SQL.
-
-## Exploitation Metabase
-
-Metabase interroge uniquement PostgreSQL :
-
-- `dwh.fact_biens` pour les analyses détaillées ;
-- `analytics.kpi_commune_mensuel` pour les dashboards agrégés.
-
-La connexion Metabase utilise le réseau Docker interne : host `postgres-dwh`, port `5432`,
-base `immolake`, utilisateur `dwh_user`.
+- **ADR-001 — PostgreSQL comme DWH** : *révisé* — le serving Postgres est retiré (voir ADR-005).
+- **ADR-002 — Airflow LocalExecutor** : *toujours valable* — tâches dans le scheduler, pas de
+  Celery/Redis ; suffisant pour un pipeline `@daily`.
+- **ADR-003 — Metabase plutôt que Superset** : *révisé* — front Streamlit (voir ADR-006).
+- **ADR-004 — Médaillon Parquet sans DuckDB** : *révisé* — DuckDB est désormais central (ADR-005).

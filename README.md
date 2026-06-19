@@ -10,105 +10,81 @@ Contexte : avec la loi Climat & Résilience, les **passoires thermiques (DPE F/G
 progressivement interdites à la location. L'objectif est d'aider un investisseur à cibler
 les communes / biens au meilleur rapport prix / rénovation.
 
-## Architecture
-
-```
-        ┌────────────┐        ┌────────────┐
-        │ API ADEME  │        │ CSV DVF    │
-        │ DPE live   │        │ data.gouv  │
-        └─────┬──────┘        └─────┬──────┘
-              │                     │
-              ▼                     ▼
-   ┌─────────────────────────────────────────┐
-   │ MinIO (S3)                              │
-   │ raw/dpe + raw/dvf                       │
-   │   → silver/dpe + silver/dvf             │
-   │   → gold/fact_biens + gold/kpi_commune  │
-   └──────────────────────┬──────────────────┘
-                          │
-                          ▼
-              ┌──────────────────────────────┐
-              │ PostgreSQL (serving)         │
-              │ dwh.fact_biens               │
-              │ analytics.kpi_commune_mensuel│
-              └───────────────┬──────────────┘
-                              ▼
-                    ┌────────────────────┐
-                    │ Metabase           │
-                    │ dashboards marché  │
-                    │ et impact DPE      │
-                    └────────────────────┘
-```
+## Architecture (v2 — DuckDB + Streamlit)
 
 ```mermaid
 flowchart LR
-  ADEME["API ADEME · DPE"] --> RAW
-  DVF["CSV DVF · data.gouv"] --> RAW
-  subgraph LAKE["MinIO — Data Lake (médaillon)"]
+  ADEME["API ADEME · DPE<br/>(14 colonnes pertinentes)"] --> RAW
+  DVF["geo-dvf · data.gouv<br/>(par département)"] --> RAW
+  subgraph LAKE["MinIO — Data Lake (médaillon, Parquet)"]
     RAW["raw/dpe · raw/dvf"] --> SILVER["silver/dpe · silver/dvf"]
     SILVER --> GOLD["gold/fact_biens · gold/kpi_commune"]
+    GOLD --> MARTS["gold/mart_commune · mart_commune_type<br/>mart_opportunites · dvf_stats_commune_type"]
   end
-  GOLD --> PG[("PostgreSQL serving<br/>dwh + analytics")]
-  PG --> MB["Metabase — dashboards"]
-  AIRFLOW["Airflow — orchestration idempotente (par dt)"] -. pilote .-> LAKE
+  MARTS --> APP["Streamlit (DuckDB/httpfs)<br/>Marché · Énergie · Carte · Bonnes affaires · Comparateur"]
+  AIRFLOW["Airflow 3 — orchestration event-driven (Assets)"] -. pilote .-> LAKE
 ```
 
-Détails et choix techniques (ADR « pourquoi PostgreSQL ? », LocalExecutor, Metabase) :
-voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **Ingestion** : API ADEME (DPE) via le Custom Hook `AdemeApiHook`, **par département** et en
+  **streaming** (générateur paginé, mémoire bornée) ; DVF géolocalisé téléchargé **par département**
+  (aligné sur le périmètre DPE). Aucune donnée chargée en totalité en mémoire.
+- **Transformations** : **DuckDB** en SQL (`include/sql/*.sql`), lit/écrit le Parquet MinIO via
+  `httpfs`/S3 — `raw → silver → gold → marts`. Plus aucun pandas ni Postgres (la v1 calait au-delà
+  de ~200 k logements/ville).
+- **Serving + BI** : **Streamlit** (`streamlit_app/`, port 8501) interroge directement le `gold/*`
+  et `ref/*` Parquet via DuckDB. Remplace le couple Postgres/Metabase de la v1.
+- **Orchestration event-driven** : les DAGs sont chaînés par des **Assets Airflow 3**
+  (`ingest --RAW_DPE→ transform --GOLD_FACT→ marts`), avec retries/backoff et un **data quality gate**.
+
+Décisions techniques détaillées (ADR) : voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Stack & accès
 
 | Service | Rôle | Accès |
 |---|---|---|
 | **Airflow 3.x** (LocalExecutor) | Orchestration | http://localhost:8080 — `airflow` / `airflow` |
-| **MinIO** | Data Lake S3 — médaillon `raw`/`silver`/`gold` (Parquet) | http://localhost:9001 — `minio_admin` / `minio_password_2026` |
-| **PostgreSQL 18** | Serving (dwh + analytics) pour Metabase | `localhost:5433` — `dwh_user` / `dwh_password`, db `immolake` |
-| **Metabase** | BI / dashboards | http://localhost:3000 |
+| **MinIO** | Data Lake S3 — médaillon `raw`/`silver`/`gold` + `ref` (Parquet) | http://localhost:9001 — `minio_admin` / `minio_password_2026` |
+| **Streamlit** | Front analytique (DuckDB sur le Parquet MinIO) | http://localhost:8501 |
 
-Conteneurs annexes : `postgres-airflow` (métadonnées Airflow, interne), `minio-init` et
-`airflow-init` (one-shot, s'arrêtent après initialisation).
+Conteneurs annexes : `postgres-airflow` (métadonnées Airflow, interne), `minio-init` (one-shot :
+crée le bucket, charge `ref/` + le snapshot de données).
 
-> PostgreSQL n'est pas une interface web : on l'inspecte via un client SQL (DBeaver, pgAdmin…)
-> sur `localhost:5433`, ou en ligne de commande (voir [Commandes utiles](#commandes-utiles)).
+## DAGs
 
-## Arborescence
+| DAG | Déclencheur | Fait |
+|---|---|---|
+| `immolake_ingest_daily` | `@daily` / manuel | API ADEME → `raw/dpe/dt=/dep=*` (1 tâche mappée par département, `select` des colonnes utiles) ; **produit l'asset `RAW_DPE`**. |
+| `immolake_transform_daily` | asset `RAW_DPE` | DVF par département → `raw/dvf` ; DuckDB `raw→silver→gold/fact_biens` + `gold/kpi_commune` ; **data quality gate** ; **produit `GOLD_FACT`**. |
+| `immolake_marts_daily` | asset `GOLD_FACT` | DuckDB → `mart_commune`, `mart_commune_type`, `mart_opportunites`, `dvf_stats_commune_type`. |
+| `immolake_seed_ref` | manuel | (Re)génère les dimensions `ref/` (`dim_commune`, `dim_dpe`, `dim_type_bien`) + pousse `geo_commune`. |
 
-```
-immolake/
-├── docker-compose.yml          # Stack complète (Airflow + MinIO + Postgres + Metabase)
-├── .env.example                # Variables (copier en .env)
-├── requirements.txt
-├── .gitattributes  .gitignore
-├── docs/
-│   ├── ARCHITECTURE.md         # Schéma détaillé + décisions (ADR)
-│   └── CONTRIBUTING.md         # Règles Git (1 issue = 1 branche)
-├── init-db/                    # Joué au 1er démarrage de postgres-dwh
-│   ├── schema.sql              # Schémas dwh/analytics + dim_dpe
-│   ├── zz1_seed_static.sql     # Seed dim_type_bien + dim_date
-│   ├── zz2_seed_dim_commune.sh # Seed dim_commune (communes + arrondissements)
-│   ├── communes.json           # Référentiel INSEE des communes (snapshot)
-│   └── arrondissements.json    # Arrondissements municipaux 75/69/13 (snapshot)
-├── dags/
-│   ├── immolake_ingest_daily.py      # API → MinIO raw (bronze)
-│   ├── immolake_transform_daily.py   # raw/silver DPE+DVF → gold Parquet
-│   └── immolake_analytics_daily.py   # gold Parquet → Postgres serving
-├── plugins/
-│   ├── hooks/
-│   │   └── ademe_api_hook.py   # Custom Hook API ADEME
-│   └── operators/
-│       └── data_quality_operator.py  # DataQualityOperator (ébauche bonus, non câblé)
-├── include/
-│   └── sql/                    # (réservé) chargement gold → Postgres fait en Python (immolake_analytics_daily.py)
-├── config/                     # airflow.cfg (généré au démarrage)
-└── tests/
-    ├── conftest.py
-    ├── test_dags.py            # import, présence, catchup=False
-    ├── test_hook.py            # Hook ADEME (mock requests)
-    ├── test_transform.py       # nettoyage silver + enrichissement DVF
-    ├── test_kpi.py             # agrégation KPI par commune
-    ├── test_serving_load.py    # chargement gold → Postgres
-    └── test_idempotence.py     # rejouer = même résultat
-```
+## Données
+
+### Sources
+- [API DPE logements existants (ADEME)](https://data.ademe.fr/datasets/dpe03existant) — `dpe03existant` (~15 M de DPE).
+- [DVF géolocalisées (geo-dvf)](https://files.data.gouv.fr/geo-dvf/latest/csv/) — fichiers CSV.gz **par département**.
+- [Référentiel communes INSEE](https://geo.api.gouv.fr/) — `dim_commune` + `geo_commune` (centroïdes + contours).
+
+### Colonnes pertinentes captées à l'ingestion (`DPE_SELECT_FIELDS`)
+Le dataset ADEME compte ~230 colonnes ; on n'ingère que celles utiles aux cas d'usage (réseau + Parquet
+allégés → on couvre plus de villes). Au-delà de l'identité (numéro, code INSEE/postal, nom commune,
+date) et du logement (type, surface, **année de construction**), on capte le signal énergie/marché :
+
+| Colonne (silver/gold) | Source ADEME | Sens métier |
+|---|---|---|
+| `etiquette_dpe` | `etiquette_dpe` | Étiquette énergie A→G (F/G = passoire) |
+| `etiquette_ges` | `etiquette_ges` | Étiquette climat A→G (émissions) |
+| `conso_energie` | `conso_5_usages_par_m2_ep` | Conso énergie primaire (kWh/m²/an) |
+| `emission_ges` | `emission_ges_5_usages_par_m2` | Émissions GES (kg CO₂/m²/an) |
+| `cout_energie_annuel` | `cout_total_5_usages` | Facture énergie estimée (€/an) |
+| `energie_chauffage` | `type_energie_principale_chauffage` | Énergie de chauffage principale |
+| `annee_construction` | `annee_construction` | Année de construction (âge du bâti) |
+
+### Enrichissement prix (choix MVP)
+Pas de matching adresse/parcelle : `gold/fact_biens` joint un **prix/m² médian DVF par
+`code_insee × type_bien × tranche de surface`** (fallback `code_insee × type_bien`), puis
+`prix = surface × prix_m2`. Les **percentiles** de prix (vraie dispersion) vivent dans
+`gold/dvf_stats_commune_type`, calculés sur les transactions DVF brutes.
 
 ## Démarrage rapide
 
@@ -116,132 +92,69 @@ immolake/
 # 1. Configuration
 cp .env.example .env
 # (Linux/Mac) aligner l'UID Airflow : echo "AIRFLOW_UID=$(id -u)" >> .env
-# Renseigner DVF_CSV_URL avec un CSV DVF compatible (data.gouv ou export local exposé en HTTP)
 
-# 2. Lancer la stack
+# 2. Lancer la stack (le snapshot de données est restauré au boot -> dashboards peuplés immédiatement)
 docker compose up -d
-
-# 3. Suivre l'init (1er démarrage : pull des images + migrations, quelques minutes)
-docker compose logs -f airflow-init
+docker compose logs -f airflow-init   # suivre l'init au 1er démarrage
 ```
 
-Puis ouvrir **Airflow** (http://localhost:8080), dépauser les DAGs et les déclencher dans
-l'ordre logique : ingestion DPE, transformation gold, puis chargement serving.
+Front **Streamlit** : http://localhost:8501 — peuplé dès le `up` grâce au snapshot committé.
 
-> Les dashboards sont déjà peuplés par le snapshot (voir plus bas). Pour **rejouer le pipeline**
-> sur de vraies données, renseigner d'abord une **URL CSV DVF valide** dans `DVF_CSV_URL` (`.env`) —
-> sinon la tâche `dvf_to_raw` échoue. Ordre des DAGs : `ingest → transform → analytics` pour un même `ds`.
+### Rejouer le pipeline sur des données fraîches
+Dépauser puis déclencher les DAGs (l'ordre s'enchaîne automatiquement par les assets) :
 
-### Connexions Airflow (pré-câblées)
+```bash
+docker compose exec -T airflow-scheduler airflow dags unpause immolake_ingest_daily
+docker compose exec -T airflow-scheduler airflow dags trigger  immolake_ingest_daily
+# -> transform puis marts se déclenchent seuls (assets RAW_DPE / GOLD_FACT)
+```
 
-| Connection ID | Type | Usage |
-|---|---|---|
-| `dwh_postgres` | Postgres | Écriture dans le DWH |
-| `minio_default` | AWS/S3 | Data Lake (endpoint `http://minio:9000`) |
-| `ademe_api` | HTTP | API DPE ADEME (`https://data.ademe.fr`) |
-
-### Variables importantes
+### Variables importantes (`.env`)
 
 | Variable | Usage |
 |---|---|
-| `ADEME_CODE_POSTAL` / `ADEME_CODE_INSEE` | filtre optionnel pour limiter l'ingestion DPE en développement |
-| `ADEME_PAGE_SIZE` / `ADEME_MAX_PAGES` | pagination ADEME |
-| `DVF_CSV_URL` | CSV DVF téléchargé vers `raw/dvf/dt=` |
-| `DVF_MAX_ROWS` | limite optionnelle de lignes DVF pour les runs de développement |
+| `ADEME_DEPARTEMENTS` | Liste des départements à ingérer (défaut : **28 départements** — 12 métropoles + villes moyennes + petits ruraux). **Plus de départements = plus de villes.** |
+| `ADEME_MAX_PAGES` | Plafond de pages par département (vide = tout ; p.ex. `20` pour une démo rapide). |
+| `ADEME_PAGE_SIZE` / `ADEME_MAX_ACTIVE_TASKS` | Taille de page ADEME / parallélisme des départements. |
+| `DVF_YEAR` | Millésime DVF (défaut `2024`). |
+| `DVF_DEPARTEMENTS` | Périmètre DVF (défaut = `ADEME_DEPARTEMENTS`). |
+| `DVF_CSV_URL` | Override : un unique CSV DVF (commune) au lieu de la couverture par département. |
 
-## Commandes utiles
+> Couvrir « le plus de data » = élargir `ADEME_DEPARTEMENTS`. L'ingestion DPE est la partie longue
+> (pagination de l'API) ; capper avec `ADEME_MAX_PAGES` pour un run de démonstration rapide. Le DVF
+> se télécharge automatiquement pour les mêmes départements (prix cohérents partout).
 
-```bash
-docker compose up -d                 # démarre la stack
-docker compose down                  # arrête (conserve les données)
-docker compose down -v               # arrête + supprime les volumes (reset total)
-docker compose ps                    # état des conteneurs
-docker compose logs -f <service>     # logs d'un service
-
-# Shell psql sur le DWH
-docker compose exec postgres-dwh psql -U dwh_user -d immolake
-
-# Lancer les tests
-docker compose exec airflow-scheduler pytest tests/ -v
-
-# Vérifier le chargement serving
-docker compose exec postgres-dwh psql -U dwh_user -d immolake \
-  -c "SELECT COUNT(*) FROM dwh.fact_biens;"
-```
-
-## Modèle de données (étoile)
+## Modèle de données (gold / marts)
 
 ```
-dim_commune (code_insee PK)   dim_date (dt PK)   dim_dpe (etiquette PK)   dim_type_bien (id PK)
-                         \         |          /              /
-                          ▼        ▼         ▼              ▼
-                      fact_biens (dt, code_insee, etiquette, type_bien_id,
-                                  surface, prix, prix_m2, conso_energie)
+ref/dim_commune (code_insee, nom, departement, region, population)   ref/dim_dpe (etiquette, label_passoire)
+ref/geo_commune (code_insee, latitude, longitude, geometry_json)     ref/dim_type_bien
 
-analytics.kpi_commune_mensuel (dt, code_insee, prix_m2_median,
-                               pct_passoires, decote_passoire_pct, nb_transactions)
+gold/fact_biens (dt, code_insee, etiquette, etiquette_ges, type_bien, tranche_surface, surface,
+                 prix_m2, prix, conso_energie, emission_ges, cout_energie_annuel, energie_chauffage,
+                 annee_construction, date_etablissement)
+gold/mart_commune        (prix/m² médian, % passoires DPE & GES, conso/émissions moy, coût énergie médian,
+                          année de construction médiane, indice de sous-cotation, z & rang départemental)
+gold/mart_commune_type   (prix/m² médian par commune × type)
+gold/mart_opportunites   (détecteur médiane − k·σ : score, étiquette d'opportunité)
+gold/dvf_stats_commune_type (percentiles p10..p90 du prix/m² sur les transactions DVF brutes)
 ```
-
-Tables définies dans `init-db/schema.sql` ; dimensions de référence peuplées par les seeds
-`init-db/zz1_seed_static.sql` (dim_type_bien, dim_date) et `init-db/zz2_seed_dim_commune.sh`
-(dim_commune, depuis le référentiel INSEE).
 
 ## Idempotence (obligatoire)
 
-Chaque run rejoue le même résultat :
+Chaque run rejoue le même résultat — les partitions de sortie sont purgées puis réécrites :
+`raw/dpe/dt=/dep=*`, `raw/dvf/dt=/dep=*`, `silver/*/dt=`, `gold/fact_biens/dt=`, `gold/kpi_commune/dt=`,
+et les marts. Rejouer un même `dt` doit donner le même `COUNT(*)`.
 
-- `raw/dpe/dt=` et `raw/dvf/dt=` sont remplacés pour la date du run ;
-- `silver/dpe/dt=` et `silver/dvf/dt=` sont réécrits en Parquet ;
-- `gold/fact_biens/dt=` et `gold/kpi_commune/dt=` sont supprimés puis recréés ;
-- au chargement **gold → Postgres**, on remplace la partition du jour (`DELETE + INSERT WHERE dt = {{ ds }}`, via `_load_dataframe_idempotent` dans `immolake_analytics_daily.py`).
+## Snapshot de démonstration (données dès `docker compose up`)
 
-```sql
-BEGIN;
-  DELETE FROM dwh.fact_biens WHERE dt = '{{ ds }}';
-  -- INSERT depuis le gold (Parquet) chargé en mémoire
-COMMIT;
-```
-
-**Vérification** (rejouer 2x le pipeline doit donner le même `COUNT(*)`) :
+Pour que **toute l'équipe ait des dashboards peuplés sans relancer le pipeline**, un snapshot des
+`gold/*` (+ `ref/geo_commune`) est **committé** dans `include/snapshot/` et **chargé au boot** par
+`minio-init`. Régénérer après un run frais :
 
 ```bash
-docker compose exec postgres-dwh psql -U dwh_user -d immolake \
-  -c "SELECT COUNT(*) FROM dwh.fact_biens WHERE dt='2026-06-17';"
+bash scripts/make_snapshot.sh   # exporte le gold de MinIO vers include/snapshot/
 ```
-
-## Dashboards Metabase (≥ 2)
-
-Provisionnés **par code** (idempotent) via `scripts/setup_metabase.py` — connexion DWH +
-questions SQL + 2 dashboards (avec encarts explicatifs), sans clics manuels.
-
-1. **Marché par commune** — prix/m² médian, nombre de logements, détail par commune.
-2. **Impact énergétique (DPE)** — % de passoires (F/G), répartition des étiquettes A→G.
-
-Provisioning (une fois la stack démarrée) :
-
-```bash
-docker compose exec -T airflow-scheduler python - < scripts/setup_metabase.py
-```
-
-Dashboards sur http://localhost:3000 (`admin@immolake.local` / `MB_ADMIN_PASSWORD`).
-Connexion Metabase → PostgreSQL : host `postgres-dwh`, port **5432** (interne), db `immolake`.
-
-## Données de démonstration (snapshot)
-
-Le serving (`dwh.fact_biens` + `analytics.kpi_commune_mensuel`) est **pré-rempli dès le 1er
-`docker compose up`** via un snapshot committé (`init-db/snapshot/*.csv.gz`, restauré par
-`init-db/zz9_restore_snapshot.sh`) → **tout le monde a des dashboards peuplés sans relancer le pipeline.**
-Couverture : 21 zones (19 grandes villes + Paris 1er/2e), ~200 k logements (échantillon).
-
-Régénérer le snapshot depuis des données fraîches : lancer le pipeline puis `bash scripts/make_snapshot.sh`.
-
-## Automatisation
-
-L'automatisation du MVP, c'est l'**orchestration Airflow quotidienne idempotente** (run daté `{{ ds }}`,
-condition claire → chargement rejouable). Une **alerte WhatsApp** (via Twilio) est **prévue mais non
-activée** dans `immolake_analytics_daily` (tâche `detect_and_alert`, qui se contente de logguer) : pour
-l'activer, brancher l'appel Twilio avec les variables `TWILIO_*` / `WHATSAPP_TO` du `.env`.
-*(Bonus — détaillé dans la roadmap jour 2.)*
 
 ## Tests
 
@@ -249,11 +162,10 @@ l'activer, brancher l'appel Twilio avec les variables `TWILIO_*` / `WHATSAPP_TO`
 docker compose exec airflow-scheduler pytest tests/ -v
 ```
 
-- `test_dags.py` : aucun import en erreur, 3 DAGs présents, `catchup=False`.
-- `test_hook.py` : test unitaire du Custom Hook (mock de `requests`, sans réseau).
-- `test_transform.py` : nettoyage DPE/DVF, calcul prix/m², enrichissement gold.
-- `test_kpi.py` : agrégation `gold/kpi_commune`.
-- `test_idempotence.py` : rejouer les écritures gold remplace bien les partitions.
+- `test_dags.py` : aucun import en erreur, DAGs présents, `catchup=False`.
+- `test_hook.py` : Custom Hook ADEME (mock `requests`) — pagination par curseur + `select` des colonnes.
+- `test_transform_sql.py` : SQL DuckDB `silver_dpe` (nettoyage/dédup/colonnes) + `gold_fact_biens` (enrichissement prix).
+- `test_streamlit_*.py` : filtres, carte, opportunités du front.
 
 ## Contribution
 
@@ -265,17 +177,8 @@ Workflow obligatoire : **1 issue = 1 branche**, PR vers `main`, relecture, puis 
 | Symptôme | Solution |
 |---|---|
 | `airflow-init` boucle / permissions logs | Sous Linux/Mac, fixer `AIRFLOW_UID=$(id -u)` dans `.env` puis relancer |
-| Port déjà utilisé (8080/3000/5433/9000/9001) | Modifier le mapping dans `docker-compose.yml` |
-| Tag d'image introuvable | Ajuster `AIRFLOW_IMAGE_NAME` / `postgres:18` dans `.env` |
-| Metabase « Cannot connect » au DWH | Host = `postgres-dwh`, port **5432** (interne, pas 5433) |
-| Bucket MinIO absent | `docker compose restart minio-init` ou le créer dans la console (9001) |
-| `DVF_CSV_URL doit etre renseigne` | Renseigner `DVF_CSV_URL` dans `.env` ou limiter le run aux étapes DPE |
-| CSV DVF trop lourd | Définir `DVF_MAX_ROWS=10000` en développement |
-| Données perdues après `down -v` | Normal : `-v` supprime les volumes. Utiliser `down` sans `-v` |
-
-## Sources de données
-
-- [API DPE logements (ADEME)](https://data.ademe.fr/datasets/dpe03existant) — `GET /data-fair/api/v1/datasets/dpe03existant/lines`
-- [Référentiel communes INSEE](https://geo.api.gouv.fr/communes) — seed de `dim_commune`
-- [DVF — Demandes de Valeurs Foncières](https://www.data.gouv.fr/datasets/dvf)
-- [DVF géolocalisées](https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees) — lat/long des transactions (carte Metabase, rattachement commune)
+| Port déjà utilisé (8080/8501/9000/9001) | Modifier le mapping dans `docker-compose.yml` |
+| Front Streamlit vide | Vérifier que le snapshot est chargé (`minio-init`) ou rejouer le pipeline ; le front retombe sinon sur des données de démo |
+| `KeyError: 'ds'` sur un run manuel | Résolu : `_ds` retombe sur la date du jour quand `logical_date` est `None` (Airflow 3) |
+| Bucket MinIO absent | `docker compose restart minio-init` |
+| Ingestion très longue | Capper `ADEME_MAX_PAGES` et/ou réduire `ADEME_DEPARTEMENTS` |
