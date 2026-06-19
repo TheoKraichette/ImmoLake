@@ -27,7 +27,7 @@ def render_sidebar_filters() -> Filters:
 
         with asset_col:
             st.caption("Bien et energie")
-            types_bien = st.multiselect("Type de bien", options.types_bien, default=options.types_bien[:2])
+            types_bien = st.multiselect("Type de bien", options.types_bien)
             etiquettes = st.multiselect("Etiquette DPE", options.etiquettes)
             passoires_only = st.checkbox("Passoires F-G", value=False)
             surface = st.slider(

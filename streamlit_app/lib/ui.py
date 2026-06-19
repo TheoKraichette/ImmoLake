@@ -616,19 +616,11 @@ def page_header(title: str, subtitle: str) -> None:
 
 
 def pipeline_rail() -> None:
-    steps = [
-        ("01", "Raw", "DPE et DVF captures"),
-        ("02", "Silver", "Nettoyage DuckDB"),
-        ("03", "Gold", "Biens enrichis prix"),
-        ("04", "Marts", "Commune et opportunites"),
-        ("05", "Front", "Decision investisseur"),
-    ]
-    columns = st.columns(len(steps))
-    for column, (index, title, caption) in zip(columns, steps):
-        with column.container(border=True):
-            st.caption(index)
-            st.markdown(f"**{title}**")
-            st.caption(caption)
+    # Flux des couches + infra transverse, en une ligne (les 5 cartes faisaient doublon).
+    st.caption(
+        "Raw -> Silver -> Gold -> Marts -> Front  ·  Stockage **MinIO** (Parquet)  ·  "
+        "Calcul & requetes **DuckDB**  ·  Orchestration **Airflow 3** (Assets)"
+    )
 
 
 def decision_board(opportunities: pd.DataFrame, market: pd.DataFrame) -> None:
