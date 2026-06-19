@@ -22,7 +22,7 @@ ui.hero(
     "Identifier les zones ou la performance energetique devient un risque de marche.",
     [
         ("Passoires", ui.format_pct(df["pct_passoires"].mean())),
-        ("Conso mediane", f"{df['conso_energie_med'].median():.0f}"),
+        ("Conso moyenne", f"{df['conso_energie_med'].median():.0f}"),
         ("Communes", ui.format_int(df["commune"].nunique())),
         ("DPE", ui.format_int(df["nb_dpe"].sum())),
     ],
@@ -30,8 +30,10 @@ ui.hero(
 
 ui.metric_row(
     [
-        ("Passoires F-G", ui.format_pct(df["pct_passoires"].mean()), None),
-        ("Conso mediane", f"{df['conso_energie_med'].median():.0f} kWh/m2/an", None),
+        ("Passoires DPE F-G", ui.format_pct(df["pct_passoires"].mean()), None),
+        ("Passoires GES F-G", ui.format_pct(df["pct_ges_passoires"].mean()), None),
+        ("Conso moyenne", f"{df['conso_energie_med'].median():.0f} kWh/m2/an", None),
+        ("Cout energie median", f"{ui.format_number(df['cout_energie_annuel_median'].median(), 0)} EUR/an", None),
         ("Communes", ui.format_int(df["commune"].nunique()), None),
     ]
 )
@@ -60,5 +62,25 @@ passoire_fig = px.bar(
 )
 passoire_fig.update_layout(height=460, margin=dict(l=10, r=10, t=50, b=10))
 right.plotly_chart(passoire_fig, width="stretch")
+
+cout = df.dropna(subset=["cout_energie_annuel_median"]).sort_values(
+    "cout_energie_annuel_median", ascending=False
+).head(20)
+if not cout.empty:
+    cout_fig = px.bar(
+        cout,
+        x="commune",
+        y="cout_energie_annuel_median",
+        color="pct_ges_passoires",
+        color_continuous_scale="OrRd",
+        labels={
+            "cout_energie_annuel_median": "Cout energie (EUR/an)",
+            "commune": "Commune",
+            "pct_ges_passoires": "% GES F-G",
+        },
+        title="Cout energetique annuel median (facture estimee)",
+    )
+    cout_fig.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(cout_fig, width="stretch")
 
 ui.note("Loi Climat : logements G interdits en location en 2025, F en 2028, E en 2034.")

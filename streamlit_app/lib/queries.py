@@ -1,9 +1,12 @@
 """DuckDB-backed data access for the Streamlit front."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 
 import pandas as pd
+
+LOGGER = logging.getLogger(__name__)
 
 from lib.connection import gold, ref, get_con
 from lib.filter_state import Filters
@@ -37,6 +40,10 @@ DEMO_ROWS = [
         "nb_dpe": 240,
         "pct_passoires": 14.2,
         "conso_energie_med": 216,
+        "emission_ges_moy": 31.0,
+        "cout_energie_annuel_median": 1450,
+        "annee_construction_mediane": 1962,
+        "pct_ges_passoires": 12.8,
         "indice_sous_cotation": -8.4,
         "z": -1.35,
         "score_opportunite": 78,
@@ -55,6 +62,10 @@ DEMO_ROWS = [
         "nb_dpe": 180,
         "pct_passoires": 18.6,
         "conso_energie_med": 248,
+        "emission_ges_moy": 38.5,
+        "cout_energie_annuel_median": 1620,
+        "annee_construction_mediane": 1974,
+        "pct_ges_passoires": 16.4,
         "indice_sous_cotation": -5.1,
         "z": -1.08,
         "score_opportunite": 64,
@@ -73,6 +84,10 @@ DEMO_ROWS = [
         "nb_dpe": 120,
         "pct_passoires": 24.5,
         "conso_energie_med": 302,
+        "emission_ges_moy": 47.2,
+        "cout_energie_annuel_median": 1780,
+        "annee_construction_mediane": 1968,
+        "pct_ges_passoires": 23.1,
         "indice_sous_cotation": -12.0,
         "z": -1.62,
         "score_opportunite": 86,
@@ -91,6 +106,10 @@ DEMO_ROWS = [
         "nb_dpe": 150,
         "pct_passoires": 10.1,
         "conso_energie_med": 184,
+        "emission_ges_moy": 22.4,
+        "cout_energie_annuel_median": 1190,
+        "annee_construction_mediane": 1991,
+        "pct_ges_passoires": 8.7,
         "indice_sous_cotation": 2.2,
         "z": 0.22,
         "score_opportunite": 36,
@@ -101,13 +120,18 @@ DEMO_ROWS = [
 
 
 def _demo_frame() -> pd.DataFrame:
-    return pd.DataFrame(DEMO_ROWS)
+    df = pd.DataFrame(DEMO_ROWS)
+    df["geometry_json"] = None  # aligne le schéma démo sur les marts (centroïdes : pas de contour)
+    return df
 
 
 def _run_query(sql: str, params: tuple = ()) -> pd.DataFrame:
     try:
         return get_con().execute(sql, params).fetchdf()
     except Exception:
+        # On logue (une vraie erreur SQL/MinIO ne doit pas se confondre avec un résultat vide légitime),
+        # puis on renvoie un DataFrame vide pour laisser l'appelant décider du fallback.
+        LOGGER.exception("Requête front en échec (fallback vide) : %s", sql[:200])
         return pd.DataFrame()
 
 
@@ -125,6 +149,10 @@ def _mart_sql() -> str:
         m.nb_dpe,
         m.pct_passoires,
         m.conso_energie_moy AS conso_energie_med,
+        m.emission_ges_moy,
+        m.cout_energie_annuel_median,
+        m.annee_construction_mediane,
+        m.pct_ges_passoires,
         m.indice_sous_cotation,
         m.z_prix_dpt AS z,
         NULL::DOUBLE AS score_opportunite,
@@ -150,6 +178,8 @@ def _opportunities_sql() -> str:
         o.nb_dpe,
         o.pct_passoires,
         NULL::DOUBLE AS conso_energie_med,
+        o.cout_energie_annuel_median,
+        o.annee_construction_mediane,
         o.ecart_pct AS indice_sous_cotation,
         o.z,
         round(
@@ -166,10 +196,23 @@ def _opportunities_sql() -> str:
     """
 
 
+def _commune_grain(filters: Filters) -> Filters:
+    """Normalise les filtres pour une requête au grain commune/marts.
+
+    - `surface`/`etiquette` sont NULL dans les marts -> filtrer dessus viderait tout (neutralisés).
+    - `'tous'` est un pseudo-type exposé par `_mart_sql` ; au grain opportunités (commune×type réel
+      'appartement'/'maison') il ne matche rien et viderait `mart_opportunites` -> on le retire.
+    """
+    types = tuple(t for t in filters.types_bien if t != "tous")
+    return replace(
+        filters, types_bien=types, surface_min=None, surface_max=None, etiquettes=(), passoires_only=False
+    )
+
+
 @st.cache_data(ttl=300)
 def get_market_data(filters: Filters | None = None) -> pd.DataFrame:
     filters = filters or Filters()
-    where = build_where(filters, alias="m")
+    where = build_where(_commune_grain(filters), alias="m")
     sql = f"SELECT * FROM ({_mart_sql()}) m {where.sql} ORDER BY prix_m2 DESC"
     df = _run_query(sql, where.params)
     if df.empty:
@@ -202,10 +245,10 @@ def get_filter_options() -> FilterOptions:
 
 
 @st.cache_data(ttl=300)
-def get_dpe_distribution(filters: Filters) -> pd.DataFrame:
-    # Répartition A→G réelle : le market data agrégé n'a pas d'étiquette (NULL), donc le
-    # groupby précédent renvoyait toujours vide. On lit le grain fact_biens (joint à ref pour
-    # filtrer/nommer). Le filtre type_bien est ignoré ('tous' côté market n'existe pas au grain bien).
+def get_dpe_distribution(filters: Filters, top_n: int = 25) -> pd.DataFrame:
+    # Répartition A→G réelle au grain bien (fact_biens). On filtre sur le `dt` courant (le glob `**`
+    # lirait sinon toutes les partitions -> double comptage si plusieurs runs), et on neutralise les
+    # filtres qui n'ont pas de sens ici (type_bien 'tous', prix/surface au grain commune, nb_dpe_min).
     grain = replace(
         filters,
         types_bien=(),
@@ -216,24 +259,27 @@ def get_dpe_distribution(filters: Filters) -> pd.DataFrame:
         nb_dpe_min=0,
     )
     where = build_where(grain, alias="m")
+    fact = gold("fact_biens")
     sql = f"""
         SELECT commune, etiquette, count(*) AS nb FROM (
             SELECT c.nom AS commune, c.departement, c.region, f.type_bien, f.etiquette
-            FROM read_parquet('{gold('fact_biens')}') f
+            FROM read_parquet('{fact}') f
             JOIN read_parquet('{ref('dim_commune')}') c USING (code_insee)
+            WHERE f.dt = (SELECT max(dt) FROM read_parquet('{fact}'))
         ) m {where.sql}
         GROUP BY commune, etiquette
-        ORDER BY commune, etiquette
     """
     df = _run_query(sql, where.params)
     if df.empty:
         return pd.DataFrame(columns=["commune", "etiquette", "nb"])
-    return df
+    # Un px.bar de ~10 000 communes est illisible : on garde les `top_n` communes les plus riches en DPE.
+    top = df.groupby("commune")["nb"].sum().nlargest(top_n).index
+    return df[df["commune"].isin(top)].sort_values(["commune", "etiquette"])
 
 
 @st.cache_data(ttl=300)
 def get_opportunities(filters: Filters) -> pd.DataFrame:
-    where = build_where(filters, alias="m")
+    where = build_where(_commune_grain(filters), alias="m")
     sql = f"SELECT * FROM ({_opportunities_sql()}) m {where.sql} ORDER BY score_opportunite DESC"
     df = _run_query(sql, where.params)
     if df.empty:

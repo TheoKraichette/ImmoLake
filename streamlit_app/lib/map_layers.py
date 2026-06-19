@@ -36,7 +36,9 @@ def build_geojson_features(df: pd.DataFrame, metric: str) -> list[dict[str, Any]
     features = []
     for row in df.itertuples(index=False):
         geometry_json = getattr(row, "geometry_json", None)
-        if not geometry_json:
+        # geometry_json peut être None / pd.NA (centroïdes sans contour) : tester `not x` sur pd.NA
+        # lève "boolean value of NA is ambiguous" -> on ne garde que les vraies chaînes JSON.
+        if not isinstance(geometry_json, str) or not geometry_json:
             continue
         try:
             geometry = json.loads(geometry_json)
