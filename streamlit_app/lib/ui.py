@@ -617,11 +617,11 @@ def page_header(title: str, subtitle: str) -> None:
 
 def pipeline_rail() -> None:
     steps = [
-        ("01", "Raw", "DPE et DVF captures"),
-        ("02", "Silver", "Nettoyage DuckDB"),
-        ("03", "Gold", "Biens enrichis prix"),
-        ("04", "Marts", "Commune et opportunites"),
-        ("05", "Front", "Decision investisseur"),
+        ("01", "Raw", "DPE et DVF captes"),
+        ("02", "Silver", "DuckDB - nettoyage"),
+        ("03", "Gold", "DuckDB - prix DVF"),
+        ("04", "Marts", "DuckDB - agregats"),
+        ("05", "Front", "Streamlit - DuckDB"),
     ]
     columns = st.columns(len(steps))
     for column, (index, title, caption) in zip(columns, steps):
