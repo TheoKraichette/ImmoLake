@@ -27,7 +27,19 @@ MINIO_BUCKET = os.getenv("MINIO_BUCKET", "immolake")
 REF_DIM_COMMUNE = "ref/dim_commune/*.parquet"
 REF_DIM_DPE = "ref/dim_dpe/*.parquet"
 VALID_DPE = "('A','B','C','D','E','F','G')"
+# DVF géolocalisé (data.gouv) : fichiers CSV.gz par département et par année.
+DVF_BASE_URL = "https://files.data.gouv.fr/geo-dvf/latest/csv"
 LOGGER = logging.getLogger(__name__)
+
+
+def _dvf_departements() -> list[str]:
+    """Périmètre DVF : `DVF_DEPARTEMENTS` si défini, sinon aligné sur les départements DPE."""
+    raw = os.getenv("DVF_DEPARTEMENTS") or os.getenv("ADEME_DEPARTEMENTS", "")
+    return [d.strip() for d in raw.split(",") if d.strip()]
+
+
+def _dvf_year() -> str:
+    return os.getenv("DVF_YEAR", "2024")
 
 
 def _ds(ds: str | None = None) -> str:
@@ -40,7 +52,8 @@ def _ds(ds: str | None = None) -> str:
             extra = getattr(event, "extra", None) or {}
             if extra.get("ds"):
                 return extra["ds"]
-    return ctx["ds"]
+    # Airflow 3 : run manuel sans logical_date -> pas de clé `ds`, on retombe sur le jour courant.
+    return ctx.get("ds") or pendulum.now("Europe/Paris").to_date_string()
 
 
 def _s3(path: str) -> str:
@@ -80,18 +93,56 @@ def immolake_transform_daily():
         return out
 
     @task
-    def dvf_to_raw(ds: str | None = None) -> str:
+    def dvf_to_raw(ds: str | None = None) -> dict:
+        """Télécharge le DVF géolocalisé par département -> raw/dvf/dt=/dep=*/data.csv.gz.
+
+        Couverture alignée sur les départements DPE (`DVF_DEPARTEMENTS` sinon `ADEME_DEPARTEMENTS`)
+        pour garder un prix/m² sur tout le périmètre. `DVF_CSV_URL` reste un override mono-fichier.
+        """
         run_ds = _ds(ds)
-        url = os.getenv("DVF_CSV_URL")
-        if not url:
-            raise AirflowException("DVF_CSV_URL doit etre renseigne pour produire raw/dvf")
-        response = requests.get(url, timeout=180)
-        response.raise_for_status()
-        key = f"raw/dvf/dt={run_ds}/data.csv.gz"
-        S3Hook(aws_conn_id="minio_default").load_bytes(
-            bytes_data=response.content, key=key, bucket_name=MINIO_BUCKET, replace=True
-        )
-        return key
+        s3 = S3Hook(aws_conn_id="minio_default")
+
+        override = os.getenv("DVF_CSV_URL")
+        if override:
+            sources = [("manual", override)]
+        else:
+            year = _dvf_year()
+            sources = [
+                (dep, f"{DVF_BASE_URL}/{year}/departements/{dep}.csv.gz")
+                for dep in _dvf_departements()
+            ]
+        if not sources:
+            raise AirflowException(
+                "Aucune source DVF : renseigner ADEME_DEPARTEMENTS (ou DVF_DEPARTEMENTS), ou DVF_CSV_URL."
+            )
+
+        total = 0
+        downloaded = 0
+        for dep, url in sources:
+            # Purge par département (ingestion additive : ajouter des départements ne touche pas aux autres).
+            _purge(s3, f"raw/dvf/dt={run_ds}/dep={dep}/")
+            try:
+                response = requests.get(url, timeout=300)
+                response.raise_for_status()
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status == 404:
+                    # DVF ne couvre pas l'Alsace-Moselle (67/68/57 : livre foncier), ni tous les millésimes.
+                    LOGGER.warning("DVF absent pour dep=%s (404) -> ignore (pas de prix sur ce departement).", dep)
+                    continue
+                raise
+            s3.load_bytes(
+                bytes_data=response.content,
+                key=f"raw/dvf/dt={run_ds}/dep={dep}/data.csv.gz",
+                bucket_name=MINIO_BUCKET,
+                replace=True,
+            )
+            downloaded += 1
+            total += len(response.content)
+            LOGGER.info("raw/dvf dep=%s : %s octets", dep, len(response.content))
+        if downloaded == 0:
+            raise AirflowException("Aucun fichier DVF telecharge (toutes les sources en echec).")
+        return {"dt": run_ds, "departements": downloaded, "bytes": total}
 
     @task
     def raw_to_silver_dvf(ds: str | None = None) -> str:
@@ -102,7 +153,7 @@ def immolake_transform_daily():
         con = connect()
         run_sql(
             con, "silver_dvf.sql",
-            dvf_csv=_s3(f"raw/dvf/dt={run_ds}/data.csv.gz"),
+            dvf_csv=_s3(f"raw/dvf/dt={run_ds}/dep=*/data.csv.gz"),
             out=_s3(f"{out}data.parquet"),
         )
         con.close()

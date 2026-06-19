@@ -21,7 +21,12 @@ COPY (
                 WHEN surface_habitable < 150 THEN '100-150'
                 ELSE '150+'
             END AS tranche_surface,
+            etiquette_ges,
+            annee_construction,
             conso_energie,
+            emission_ges,
+            cout_energie_annuel,
+            energie_chauffage,
             date_etablissement
         FROM read_parquet('${silver_dpe}')
         WHERE code_insee IS NOT NULL AND surface_habitable > 0
@@ -56,7 +61,12 @@ COPY (
         d.surface,
         COALESCE(rs.prix_m2, rc.prix_m2)                AS prix_m2,
         d.surface * COALESCE(rs.prix_m2, rc.prix_m2)    AS prix,
+        d.etiquette_ges,
+        d.annee_construction,
         d.conso_energie,
+        d.emission_ges,
+        d.cout_energie_annuel,
+        d.energie_chauffage,
         d.date_etablissement
     FROM dpe d
     JOIN read_parquet('${dim_commune}') c USING (code_insee)

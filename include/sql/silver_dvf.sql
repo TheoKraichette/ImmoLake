@@ -14,8 +14,15 @@ COPY (
         TRY_CAST(date_mutation AS DATE)                         AS date_mutation,
         TRY_CAST(longitude AS DOUBLE)                           AS longitude,
         TRY_CAST(latitude AS DOUBLE)                            AS latitude
-    FROM read_csv_auto('${dvf_csv}', header = true)
+    -- quote='"' explicite : certaines adresses DVF contiennent une virgule entre guillemets et
+    -- l'auto-détection peut manquer le quote sur l'échantillon. ignore_errors : tolère les rares
+    -- lignes malformées (données réelles), on ne calcule que des médianes.
+    FROM read_csv_auto('${dvf_csv}', header = true, quote = '"', escape = '"', ignore_errors = true)
     WHERE type_local IN ('Appartement', 'Maison')
       AND TRY_CAST(valeur_fonciere AS DOUBLE) > 0
-      AND TRY_CAST(surface_reelle_bati AS DOUBLE) > 0
+      AND TRY_CAST(surface_reelle_bati AS DOUBLE) >= 9          -- exclut garages/dépendances à surface ~nulle
+      -- Borne le prix/m² à une plage réaliste : élimine les ventes multi-lots / surfaces aberrantes
+      -- (sinon la médiane des petites communes part en vrille : 0 €/m² ou 600 000 €/m²).
+      AND TRY_CAST(valeur_fonciere AS DOUBLE) / NULLIF(TRY_CAST(surface_reelle_bati AS DOUBLE), 0)
+          BETWEEN 200 AND 40000
 ) TO '${out}' (FORMAT PARQUET);

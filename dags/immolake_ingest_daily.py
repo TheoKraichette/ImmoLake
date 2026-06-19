@@ -30,7 +30,12 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _ds(ds: str | None) -> str:
-    return ds or get_current_context()["ds"]
+    # Airflow 3 : un run déclenché manuellement peut avoir logical_date=None (pas de clé `ds`).
+    # On retombe alors sur la date du jour pour rester rejouable hors run planifié.
+    if ds:
+        return ds
+    ctx = get_current_context()
+    return ctx.get("ds") or pendulum.now("Europe/Paris").to_date_string()
 
 
 def _optional_int_env(name: str) -> int | None:

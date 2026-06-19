@@ -107,3 +107,22 @@ def test_iter_dpe_yields_pages_lazily(mock_conn):
     assert [page[0]["numero_dpe"] for page in rest] == ["B", "C"]
     assert len(session.calls) == 3
     assert session.calls[1]["params"]["after"] == "c2"
+
+
+@patch.object(AdemeApiHook, "get_connection")
+def test_iter_dpe_restricts_columns_via_select(mock_conn):
+    """`select` borne les colonnes demandées à l'API (allège pages réseau + Parquet raw)."""
+    conn = MagicMock(host="data.ademe.fr")
+    conn.extra_dejson = {"schema": "https"}
+    mock_conn.return_value = conn
+
+    session = FakeSession([fake_response({"results": [{"numero_dpe": "A"}]})])
+    hook = AdemeApiHook()
+    hook._session = MagicMock(return_value=session)
+
+    next(hook.iter_dpe(departement="33", size=10))
+
+    select = session.calls[0]["params"]["select"]
+    # Champs pertinents (DPE + GES + coût + année) présents ; pas tout le dataset (230 colonnes).
+    for field in ("etiquette_dpe", "etiquette_ges", "annee_construction", "cout_total_5_usages"):
+        assert field in select

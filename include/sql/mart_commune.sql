@@ -11,13 +11,18 @@ COPY (
             median(prix_m2)                                        AS prix_m2_median,
             count(*)                                               AS nb_dpe,
             round(100.0 * avg(CASE WHEN is_passoire THEN 1 ELSE 0 END), 2) AS pct_passoires,
-            round(avg(conso_energie), 1)                           AS conso_energie_moy
+            round(avg(conso_energie), 1)                           AS conso_energie_moy,
+            round(avg(emission_ges), 1)                            AS emission_ges_moy,
+            median(cout_energie_annuel)                            AS cout_energie_annuel_median,
+            median(annee_construction)                            AS annee_construction_mediane,
+            round(100.0 * avg(CASE WHEN etiquette_ges IN ('F', 'G') THEN 1 ELSE 0 END), 2) AS pct_ges_passoires
         FROM fact
         GROUP BY code_insee
     )
     SELECT
         c.code_insee, dc.nom, dc.departement, dc.region, dc.population,
         c.prix_m2_median, c.nb_dpe, c.pct_passoires, c.conso_energie_moy,
+        c.emission_ges_moy, c.cout_energie_annuel_median, c.annee_construction_mediane, c.pct_ges_passoires,
         (c.nb_dpe >= 30)                                           AS fiable,
         round(
             100.0 * (c.prix_m2_median - median(c.prix_m2_median) OVER w)
