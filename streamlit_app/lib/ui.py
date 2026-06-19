@@ -618,10 +618,10 @@ def page_header(title: str, subtitle: str) -> None:
 def pipeline_rail() -> None:
     steps = [
         ("01", "Raw", "DPE et DVF captes"),
-        ("02", "Silver", "DuckDB - nettoyage"),
-        ("03", "Gold", "DuckDB - prix DVF"),
-        ("04", "Marts", "DuckDB - agregats"),
-        ("05", "Front", "Streamlit - DuckDB"),
+        ("02", "Silver", "Nettoye et type"),
+        ("03", "Gold", "Biens enrichis prix"),
+        ("04", "Marts", "Commune et opportunites"),
+        ("05", "Front", "Decision investisseur"),
     ]
     columns = st.columns(len(steps))
     for column, (index, title, caption) in zip(columns, steps):
@@ -629,6 +629,11 @@ def pipeline_rail() -> None:
             st.caption(index)
             st.markdown(f"**{title}**")
             st.caption(caption)
+    # Stockage et calcul sont transverses aux couches (pas une etape) -> legende infra.
+    st.caption(
+        "Stockage : **MinIO** (Parquet, medaillon raw->marts)  ·  "
+        "Calcul & requetes : **DuckDB**  ·  Orchestration : **Airflow 3** (Assets)"
+    )
 
 
 def decision_board(opportunities: pd.DataFrame, market: pd.DataFrame) -> None:
