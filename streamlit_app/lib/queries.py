@@ -196,16 +196,39 @@ def _opportunities_sql() -> str:
     """
 
 
+# Villes à arrondissements municipaux : les DPE/DVF sont au grain arrondissement
+# (noms 'Paris 1er Arrondissement' … 'Paris 20e Arrondissement'). Sélectionner « Paris » doit
+# donc englober tous ses arrondissements (+ la commune-ville elle-même).
+_CITY_ARRONDISSEMENTS = {"Paris": 20, "Lyon": 9, "Marseille": 16}
+
+
+def _expand_cities(communes: tuple[str, ...]) -> tuple[str, ...]:
+    out = set(communes)
+    for city, n_arr in _CITY_ARRONDISSEMENTS.items():
+        if city in out:
+            out.update(
+                f"{city} {'1er' if n == 1 else f'{n}e'} Arrondissement" for n in range(1, n_arr + 1)
+            )
+    return tuple(out)
+
+
 def _commune_grain(filters: Filters) -> Filters:
     """Normalise les filtres pour une requête au grain commune/marts.
 
     - `surface`/`etiquette` sont NULL dans les marts -> filtrer dessus viderait tout (neutralisés).
     - `'tous'` est un pseudo-type exposé par `_mart_sql` ; au grain opportunités (commune×type réel
       'appartement'/'maison') il ne matche rien et viderait `mart_opportunites` -> on le retire.
+    - `Paris`/`Lyon`/`Marseille` -> étendus à tous leurs arrondissements.
     """
     types = tuple(t for t in filters.types_bien if t != "tous")
     return replace(
-        filters, types_bien=types, surface_min=None, surface_max=None, etiquettes=(), passoires_only=False
+        filters,
+        types_bien=types,
+        communes=_expand_cities(filters.communes),
+        surface_min=None,
+        surface_max=None,
+        etiquettes=(),
+        passoires_only=False,
     )
 
 
@@ -215,7 +238,10 @@ def get_market_data(filters: Filters | None = None) -> pd.DataFrame:
     where = build_where(_commune_grain(filters), alias="m")
     sql = f"SELECT * FROM ({_mart_sql()}) m {where.sql} ORDER BY prix_m2 DESC"
     df = _run_query(sql, where.params)
-    if df.empty:
+    if df.empty and _run_query(f"SELECT 1 FROM ({_mart_sql()}) m LIMIT 1").empty:
+        # Lac réellement vide (pas de pipeline ni de snapshot) -> données de démonstration.
+        # Si le mart a des données mais que le filtre exclut tout, on renvoie un df vide
+        # (la page affiche "aucun résultat" plutôt que des villes de démo trompeuses).
         df = _demo_frame()
     return df
 
@@ -252,6 +278,7 @@ def get_dpe_distribution(filters: Filters, top_n: int = 25) -> pd.DataFrame:
     grain = replace(
         filters,
         types_bien=(),
+        communes=_expand_cities(filters.communes),
         prix_m2_min=None,
         prix_m2_max=None,
         surface_min=None,
