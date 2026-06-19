@@ -37,7 +37,8 @@ def _ds(ds: str | None = None) -> str:
             extra = getattr(event, "extra", None) or {}
             if extra.get("ds"):
                 return extra["ds"]
-    return ctx["ds"]
+    # Airflow 3 : run manuel sans logical_date -> pas de clé `ds`, on retombe sur le jour courant.
+    return ctx.get("ds") or pendulum.now("Europe/Paris").to_date_string()
 
 
 def _s3(path: str) -> str:

@@ -1,2 +1,6 @@
 # Fins de ligne LF dans le dépôt (cohérence multi-OS, Makefile/scripts).
 * text=auto eol=lf
+
+# Données binaires (référentiels + snapshot) : jamais de normalisation EOL.
+*.parquet binary
+*.csv.gz binary

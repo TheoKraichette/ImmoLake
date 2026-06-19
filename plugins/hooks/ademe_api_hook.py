@@ -18,6 +18,26 @@ DEFAULT_PAGE_SIZE = 1000
 DEFAULT_TIMEOUT = 60
 PAGE_RETRIES = 5  # pagination profonde ADEME : retente une page sur timeout/erreur réseau transitoire
 
+# Le dataset DPE compte ~230 colonnes ; on n'en exploite qu'une poignée. Passer `select` à l'API
+# (paramètre data-fair) allège drastiquement les pages (réseau + Parquet raw) et permet de viser plus
+# de départements. La liste est CANONIQUE : les `silver_*` lisent exactement ces noms de champs.
+DPE_SELECT_FIELDS = (
+    "numero_dpe",
+    "date_etablissement_dpe",
+    "code_insee_ban",
+    "code_postal_ban",
+    "nom_commune_ban",
+    "type_batiment",
+    "surface_habitable_logement",
+    "annee_construction",
+    "etiquette_dpe",
+    "etiquette_ges",
+    "conso_5_usages_par_m2_ep",
+    "emission_ges_5_usages_par_m2",
+    "cout_total_5_usages",
+    "type_energie_principale_chauffage",
+)
+
 
 class AdemeApiHook(BaseHook):
     conn_name_attr = "ademe_conn_id"
@@ -78,14 +98,20 @@ class AdemeApiHook(BaseHook):
         code_insee: str | None = None,
         size: int = DEFAULT_PAGE_SIZE,
         max_pages: int | None = None,
+        select: tuple[str, ...] | None = DPE_SELECT_FIELDS,
     ) -> Iterator[list[dict]]:
         """Yield les pages DPE (≤`size` lignes) une à une, en suivant le curseur `after`.
 
         Générateur : ne conserve jamais l'ensemble des résultats en mémoire (≠ `get_dpe`),
         ce qui permet d'ingérer un département entier — puis la France — sans OOM.
+
+        `select` restreint les colonnes renvoyées par l'API (défaut : `DPE_SELECT_FIELDS`).
+        Passer `None`/`()` pour récupérer toutes les colonnes du dataset.
         """
         url = f"{self._base_url()}/lines"
         params: dict[str, int | str] = {"size": size}
+        if select:
+            params["select"] = ",".join(select)
         qs = self._build_qs(departement=departement, code_postal=code_postal, code_insee=code_insee)
         if qs:
             params["qs"] = qs
@@ -123,11 +149,12 @@ class AdemeApiHook(BaseHook):
         code_insee: str | None = None,
         size: int = DEFAULT_PAGE_SIZE,
         max_pages: int | None = None,
+        select: tuple[str, ...] | None = DPE_SELECT_FIELDS,
     ) -> list[dict]:
         """Agrège toutes les pages en mémoire (compat). Préférer `iter_dpe` sur gros volumes."""
         rows: list[dict] = []
         for page_rows in self.iter_dpe(
-            code_postal=code_postal, code_insee=code_insee, size=size, max_pages=max_pages
+            code_postal=code_postal, code_insee=code_insee, size=size, max_pages=max_pages, select=select
         ):
             rows.extend(page_rows)
         return rows

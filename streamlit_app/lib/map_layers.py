@@ -36,7 +36,9 @@ def build_geojson_features(df: pd.DataFrame, metric: str) -> list[dict[str, Any]
     features = []
     for row in df.itertuples(index=False):
         geometry_json = getattr(row, "geometry_json", None)
-        if not geometry_json:
+        # geometry_json peut être None / pd.NA (centroïdes sans contour) : tester `not x` sur pd.NA
+        # lève "boolean value of NA is ambiguous" -> on ne garde que les vraies chaînes JSON.
+        if not isinstance(geometry_json, str) or not geometry_json:
             continue
         try:
             geometry = json.loads(geometry_json)
@@ -74,7 +76,11 @@ def build_map_layers(df: pd.DataFrame, metric: str):
             "ScatterplotLayer",
             data=point_df,
             get_position="[longitude, latitude]",
-            get_radius=9500,
+            # Rayon borné EN PIXELS : sinon un rayon fixe en mètres (9,5 km) fait qu'un arrondissement
+            # couvre toute la ville au zoom. 3-9 px reste lisible du national à l'échelle commune.
+            get_radius=500,
+            radius_min_pixels=3,
+            radius_max_pixels=9,
             get_fill_color="fill_color",
             get_line_color=[255, 255, 255],
             line_width_min_pixels=1,

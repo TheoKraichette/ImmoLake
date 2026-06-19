@@ -64,14 +64,20 @@ scatter_fig = px.scatter(
 scatter_fig.update_layout(height=460, margin=dict(l=10, r=10, t=50, b=10))
 right.plotly_chart(scatter_fig, width="stretch")
 
+table_cols = [
+    "commune", "departement", "type_bien", "prix_m2", "indice_sous_cotation",
+    "pct_passoires", "annee_construction_mediane", "cout_energie_annuel_median", "nb_dpe",
+]
 st.dataframe(
-    df[["commune", "departement", "type_bien", "prix_m2", "indice_sous_cotation", "pct_passoires", "nb_dpe"]],
+    df[[c for c in table_cols if c in df.columns]],
     width="stretch",
     hide_index=True,
     column_config={
         "prix_m2": st.column_config.NumberColumn("Prix/m2", format="%.0f EUR"),
         "indice_sous_cotation": st.column_config.NumberColumn("Sous-cotation", format="%.1f %%"),
         "pct_passoires": st.column_config.NumberColumn("Passoires", format="%.1f %%"),
+        "annee_construction_mediane": st.column_config.NumberColumn("Annee batie", format="%d"),
+        "cout_energie_annuel_median": st.column_config.NumberColumn("Cout energie", format="%.0f EUR/an"),
         "nb_dpe": st.column_config.NumberColumn("DPE", format="%d"),
     },
 )
