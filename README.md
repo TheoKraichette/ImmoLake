@@ -63,7 +63,14 @@ crée le bucket, charge `ref/` + le snapshot de données).
 ### Sources
 - [API DPE logements existants (ADEME)](https://data.ademe.fr/datasets/dpe03existant) — `dpe03existant` (~15 M de DPE).
 - [DVF géolocalisées (geo-dvf)](https://files.data.gouv.fr/geo-dvf/latest/csv/) — fichiers CSV.gz **par département**.
-- [Référentiel communes INSEE](https://geo.api.gouv.fr/) — `dim_commune` + `geo_commune` (centroïdes + contours).
+- [Référentiel communes INSEE](https://geo.api.gouv.fr/) — `dim_commune` (national) + `geo_commune` (centroïdes des départements couverts → carte en points).
+
+### Couverture livrée (snapshot committé)
+Le snapshot embarqué couvre **28 départements** (12 métropoles — Paris, Lyon, Marseille, Bordeaux,
+Toulouse, Nice, Nantes, Rouen, Montpellier, Lille, Rennes, Grenoble — + 10 villes moyennes + 6 petits
+ruraux), soit **~6,3 M de logements DPE**, **10 382 communes**, prix/m² médian réaliste (~3 200 €,
+de ~600 € en rural à ~14 600 € à Paris 6e). **Paris est complet** (815 869 DPE). Élargir = ajouter
+des départements à `ADEME_DEPARTEMENTS` (ingestion additive).
 
 ### Colonnes pertinentes captées à l'ingestion (`DPE_SELECT_FIELDS`)
 Le dataset ADEME compte ~230 colonnes ; on n'ingère que celles utiles aux cas d'usage (réseau + Parquet
@@ -85,6 +92,19 @@ Pas de matching adresse/parcelle : `gold/fact_biens` joint un **prix/m² médian
 `code_insee × type_bien × tranche de surface`** (fallback `code_insee × type_bien`), puis
 `prix = surface × prix_m2`. Les **percentiles** de prix (vraie dispersion) vivent dans
 `gold/dvf_stats_commune_type`, calculés sur les transactions DVF brutes.
+
+## Front (Streamlit — 5 pages)
+
+**Marché** (prix/m², sous-cotation territoriale), **Énergie** (passoires DPE & GES, conso, coût €/an,
+émissions), **Carte** (points colorés par prix/m² ou % passoires), **Bonnes affaires** (détecteur
+médiane − k·σ, opportunités commune × type), **Comparateur**. Filtres partagés (région / département /
+commune, type, étiquette, prix, surface).
+
+- Sélectionner **Paris / Lyon / Marseille** englobe automatiquement **tous leurs arrondissements**.
+- Les filtres *surface* / *étiquette* portent sur le grain logement (répartition A→G de la page Énergie) ;
+  au grain commune ils sont sans effet (les marts sont agrégés).
+- Un filtre sans résultat affiche « aucune donnée » ; les 4 villes de démonstration n'apparaissent que
+  si le lac est réellement vide (pas de snapshot ni de pipeline).
 
 ## Démarrage rapide
 
@@ -164,7 +184,7 @@ docker compose exec airflow-scheduler pytest tests/ -v
 
 - `test_dags.py` : aucun import en erreur, DAGs présents, `catchup=False`.
 - `test_hook.py` : Custom Hook ADEME (mock `requests`) — pagination par curseur + `select` des colonnes.
-- `test_transform_sql.py` : SQL DuckDB `silver_dpe` (nettoyage/dédup/colonnes) + `gold_fact_biens` (enrichissement prix).
+- `test_transform_sql.py` : SQL DuckDB `silver_dpe` (nettoyage/dédup/colonnes), `silver_dvf` (filtre prix/surface + parsing CSV) et `gold_fact_biens` (enrichissement prix).
 - `test_streamlit_*.py` : filtres, carte, opportunités du front.
 
 ## Contribution
