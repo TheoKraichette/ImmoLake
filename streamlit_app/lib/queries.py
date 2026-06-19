@@ -212,18 +212,34 @@ def _expand_cities(communes: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _commune_grain(filters: Filters) -> Filters:
-    """Normalise les filtres pour une requête au grain commune/marts.
+def _drop_pseudo_type(types: tuple[str, ...]) -> tuple[str, ...]:
+    """Retire le pseudo-type 'tous' (exposé par mart_commune) ; conserve les vrais types."""
+    return tuple(t for t in types if t != "tous")
 
-    - `surface`/`etiquette` sont NULL dans les marts -> filtrer dessus viderait tout (neutralisés).
-    - `'tous'` est un pseudo-type exposé par `_mart_sql` ; au grain opportunités (commune×type réel
-      'appartement'/'maison') il ne matche rien et viderait `mart_opportunites` -> on le retire.
-    - `Paris`/`Lyon`/`Marseille` -> étendus à tous leurs arrondissements.
+
+def _commune_grain(filters: Filters) -> Filters:
+    """Filtres pour `mart_commune` (grain COMMUNE, agrégé en 'tous').
+
+    surface/etiquette sont NULL et le type est agrégé à ce grain -> on neutralise ces filtres (sinon
+    la requête se vide). `Paris`/`Lyon`/`Marseille` -> tous leurs arrondissements.
     """
-    types = tuple(t for t in filters.types_bien if t != "tous")
     return replace(
         filters,
-        types_bien=types,
+        types_bien=(),
+        communes=_expand_cities(filters.communes),
+        surface_min=None,
+        surface_max=None,
+        etiquettes=(),
+        passoires_only=False,
+    )
+
+
+def _typed_grain(filters: Filters) -> Filters:
+    """Filtres pour les grains commune×type (`mart_opportunites`) ou bien (`fact_biens`) : on CONSERVE
+    les vrais types (appartement/maison), on retire le pseudo-type 'tous' et les filtres NULL."""
+    return replace(
+        filters,
+        types_bien=_drop_pseudo_type(filters.types_bien),
         communes=_expand_cities(filters.communes),
         surface_min=None,
         surface_max=None,
@@ -257,11 +273,15 @@ def get_map_data(filters: Filters | None = None) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def get_filter_options() -> FilterOptions:
     df = get_market_data(Filters(nb_dpe_min=1))
+    # Les vrais types (appartement/maison) vivent au grain commune×type, pas dans mart_commune
+    # (agrégé en 'tous'). On les lit donc dans mart_commune_type.
+    types = _run_query(f"SELECT DISTINCT type_bien FROM read_parquet('{gold('mart_commune_type')}') WHERE type_bien IS NOT NULL ORDER BY type_bien")
+    types_bien = types["type_bien"].astype(str).tolist() if not types.empty else ["appartement", "maison"]
     return FilterOptions(
         regions=sorted(df["region"].dropna().astype(str).unique().tolist()),
         departements=sorted(df["departement"].dropna().astype(str).unique().tolist()),
         communes=sorted(df["commune"].dropna().astype(str).unique().tolist()),
-        types_bien=sorted(df["type_bien"].dropna().astype(str).unique().tolist()),
+        types_bien=types_bien,
         etiquettes=["A", "B", "C", "D", "E", "F", "G"],
         prix_m2_min=max(0, int(df["prix_m2"].min() // 100 * 100)),
         prix_m2_max=int(df["prix_m2"].max() // 100 * 100 + 500),
@@ -277,7 +297,7 @@ def get_dpe_distribution(filters: Filters, top_n: int = 25) -> pd.DataFrame:
     # filtres qui n'ont pas de sens ici (type_bien 'tous', prix/surface au grain commune, nb_dpe_min).
     grain = replace(
         filters,
-        types_bien=(),
+        types_bien=_drop_pseudo_type(filters.types_bien),
         communes=_expand_cities(filters.communes),
         prix_m2_min=None,
         prix_m2_max=None,
@@ -306,7 +326,7 @@ def get_dpe_distribution(filters: Filters, top_n: int = 25) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def get_opportunities(filters: Filters) -> pd.DataFrame:
-    where = build_where(_commune_grain(filters), alias="m")
+    where = build_where(_typed_grain(filters), alias="m")
     sql = f"SELECT * FROM ({_opportunities_sql()}) m {where.sql} ORDER BY score_opportunite DESC"
     df = _run_query(sql, where.params)
     if df.empty:
